@@ -80,25 +80,28 @@ Logs: `journalctl -u imperium -f`
 
 ```bash
 sudo cp /var/www/imperium/deploy/nginx-imperium.conf /etc/nginx/sites-available/imperium
-# In der Datei server_name auf deine Domain/IP setzen:
-sudo nano /etc/nginx/sites-available/imperium
 sudo ln -s /etc/nginx/sites-available/imperium /etc/nginx/sites-enabled/
-sudo rm -f /etc/nginx/sites-enabled/default     # optional
+sudo rm -f /etc/nginx/sites-enabled/default     # entfernt die nginx-Standardseite
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-Jetzt ist das Spiel unter `http://DEINE-DOMAIN/` erreichbar.
+Die mitgelieferte Konfig nutzt `server_name _` und lauscht damit **auf jede IP** —
+ohne Domain musst du nichts anpassen. Das Spiel ist jetzt unter
+`http://DEINE-SERVER-IP/` erreichbar (z. B. `http://203.0.113.10/`).
 
-## 9. HTTPS (empfohlen)
+## 9. HTTPS — erst sobald du eine Domain hast
+
+Über die nackte IP geht nur `http://` (Let's Encrypt stellt keine Zertifikate für
+IPs aus). Sobald du eine Domain auf den Server zeigen lässt:
 
 ```bash
+# server_name in /etc/nginx/sites-available/imperium auf die Domain setzen, dann:
 sudo apt install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d game.example.com
 ```
 
-Certbot trägt das Zertifikat automatisch in die nginx-Site ein und richtet die
-Erneuerung ein. Danach läuft alles über `https://` — der Client nutzt dank
-`location.origin` automatisch dieselbe (sichere) URL.
+Certbot trägt das Zertifikat ein und erneuert es automatisch. Der Client nutzt
+dank `location.origin` danach von selbst die `https://`-URL — keine Code-Änderung.
 
 ## 10. Firewall
 

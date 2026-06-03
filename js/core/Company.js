@@ -8,17 +8,22 @@ import { Resource } from './Resource.js';
 export class Company {
     name;
     money;
+    /** Forschungspunkte — bleiben über Prestige erhalten. */
+    research;
     // --- Values recomputed every recalculate() ---
     clickBaseValue = 1;
     clickMultiplier = 1;
     clickPercentOfProduction = 0;
     globalMultiplier = 1;
     autoClicksPerSecond = 0;
+    /** Multiplikator auf die Forschungsrate (aus dem Forschungsbaum). */
+    researchRateMult = 1;
     constructor(name = 'Mein Startup') {
         this.name = name;
         this.money = new Resource({ id: 'money', name: 'Kapital', icon: '💰' });
+        this.research = new Resource({ id: 'research', name: 'Forschung', icon: '🔬' });
     }
-    /** Reset economic state for a prestige. Keeps the name only. */
+    /** Reset economic state for a prestige. Keeps name + research (Meta-Progression). */
     resetForPrestige() {
         this.money = new Resource({ id: 'money', name: 'Kapital', icon: '💰' });
         this.clickBaseValue = 1;
@@ -26,15 +31,17 @@ export class Company {
         this.clickPercentOfProduction = 0;
         this.globalMultiplier = 1;
         this.autoClicksPerSecond = 0;
+        // research bleibt absichtlich erhalten
     }
     toJSON() {
-        return { name: this.name, money: this.money.toJSON() };
+        return { name: this.name, money: this.money.toJSON(), research: this.research.toJSON() };
     }
     loadJSON(data) {
         if (!data)
             return;
         this.name = data.name ?? this.name;
         this.money.loadJSON(data.money);
+        this.research.loadJSON(data.research);
     }
 }
 //# sourceMappingURL=Company.js.map

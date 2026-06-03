@@ -7,6 +7,9 @@
   <title>🏢 Unternehmens-Imperium</title>
   <link rel="stylesheet" href="css/styles.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏢</text></svg>">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#0a0e1a">
+  <link rel="apple-touch-icon" href="icon.svg">
 </head>
 <body data-theme="local">
 
@@ -56,6 +59,8 @@
         <div class="qs"><span class="qs-label">🏭 Gebäude</span><span id="stat-buildings" class="qs-value">0</span></div>
       </div>
 
+      <button id="daily-bonus" class="daily-bonus" hidden></button>
+
       <div id="milestone" class="milestone">
         <div id="milestone-label" class="milestone-label">Nächste Welt …</div>
         <div class="milestone-bar"><div id="milestone-fill" class="milestone-fill"></div></div>
@@ -68,6 +73,7 @@
         <button data-tab="shop" class="active">🏬 Assets</button>
         <button data-tab="upgrades">⬆️ Upgrades</button>
         <button data-tab="worlds">🌍 Welten</button>
+        <button data-tab="research">🔬 Forschung</button>
         <button data-tab="quests">📋 Aufträge</button>
         <button data-tab="prestige">📈 Prestige</button>
         <button data-tab="achievements">🏆 Erfolge</button>
@@ -97,6 +103,18 @@
         <section id="tab-worlds" class="tab">
           <h2>Welten &amp; Märkte</h2>
           <div id="worlds-list" class="worlds-list"></div>
+        </section>
+
+        <section id="tab-research" class="tab">
+          <div class="research-head">
+            <h2>🔬 Forschung</h2>
+            <div class="research-stats">
+              <span id="research-points">0</span> Forschungspunkte
+              <span class="research-rate">(+<span id="research-rate">0</span>/s)</span>
+            </div>
+          </div>
+          <p class="hint">Mitarbeiter &amp; Gebäude erzeugen Forschungspunkte. Der Baum bleibt über Prestige erhalten.</p>
+          <div id="research-tree" class="research-tree"></div>
         </section>
 
         <section id="tab-quests" class="tab">

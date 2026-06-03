@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="96" fill="#0a0e1a"/>
+  <rect width="512" height="512" rx="96" fill="url(#g)" opacity="0.25"/>
+  <defs>
+    <radialGradient id="g" cx="35%" cy="30%" r="80%">
+      <stop offset="0%" stop-color="#22c55e"/>
+      <stop offset="100%" stop-color="#0a0e1a"/>
+    </radialGradient>
+  </defs>
+  <text x="50%" y="53%" font-size="300" text-anchor="middle" dominant-baseline="central">🏢</text>
+</svg>

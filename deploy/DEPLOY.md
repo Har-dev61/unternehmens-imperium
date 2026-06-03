@@ -89,19 +89,31 @@ Die mitgelieferte Konfig nutzt `server_name _` und lauscht damit **auf jede IP**
 ohne Domain musst du nichts anpassen. Das Spiel ist jetzt unter
 `http://DEINE-SERVER-IP/` erreichbar (z. B. `http://203.0.113.10/`).
 
-## 9. HTTPS — erst sobald du eine Domain hast
+## 9. HTTPS — auch ohne eigene Domain (via sslip.io)
 
-Über die nackte IP geht nur `http://` (Let's Encrypt stellt keine Zertifikate für
-IPs aus). Sobald du eine Domain auf den Server zeigen lässt:
+Für die nackte IP stellt Let's Encrypt keine Zertifikate aus. Trick: **sslip.io**
+liefert kostenlos einen Hostnamen, der auf deine IP auflöst — `<IP>.sslip.io`.
+Damit kann certbot ein gültiges Zertifikat ausstellen. Für `152.89.239.223` ist
+der Hostname **`152.89.239.223.sslip.io`**.
 
 ```bash
-# server_name in /etc/nginx/sites-available/imperium auf die Domain setzen, dann:
+# 1) server_name auf den sslip.io-Hostnamen setzen:
+sudo sed -i 's/server_name _;/server_name 152.89.239.223.sslip.io;/' /etc/nginx/sites-available/imperium
+sudo nginx -t && sudo systemctl reload nginx
+
+# 2) Zertifikat holen (certbot richtet HTTPS + Auto-Erneuerung automatisch ein):
 sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d game.example.com
+sudo certbot --nginx -d 152.89.239.223.sslip.io --redirect -m deine@mail.de --agree-tos --no-eff-email
 ```
 
-Certbot trägt das Zertifikat ein und erneuert es automatisch. Der Client nutzt
-dank `location.origin` danach von selbst die `https://`-URL — keine Code-Änderung.
+Danach das Spiel über **`https://152.89.239.223.sslip.io/`** aufrufen — gültiges
+Schloss, keine Warnung. Der Client nutzt dank `location.origin` automatisch
+dieselbe `https://`-Adresse, und der **Service Worker / die PWA** (Installieren,
+Offline-Spiel) wird dadurch erst aktiv (braucht sicheren Kontext). Keine
+Code-Änderung nötig.
+
+> Hast du später eine **echte Domain**, einfach den DNS-A-Record auf die IP zeigen
+> lassen und `sudo certbot --nginx -d deine-domain.de` ausführen.
 
 ## 10. Firewall
 

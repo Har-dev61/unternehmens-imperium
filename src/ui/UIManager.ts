@@ -1,13 +1,13 @@
-import { formatNumber, formatMoney, formatRate } from './format.js';
+import { formatNumber, formatMoney, formatRate, formatTime } from './format.js';
 import { UPGRADE_CATEGORIES } from '../data/upgrades.js';
-import type { Game } from '../core/Game.js';
+import type { Game, DailyReward } from '../core/Game.js';
 import type { Notifications } from './Notifications.js';
 import type { EventBus } from '../systems/EventBus.js';
 import type { Asset } from '../core/Asset.js';
 import type { Upgrade } from '../core/Upgrade.js';
 import type { Quest } from '../core/Quest.js';
 import type { GoldenActive } from '../systems/GoldenDeal.js';
-import type { BuyQuantity, UpgradeCategory } from '../types.js';
+import type { BuyQuantity, UpgradeCategory, ResearchUpgradeConfig } from '../types.js';
 
 interface ShopRow {
   asset: Asset;
@@ -39,6 +39,7 @@ export class UIManager {
   private shopRows: ShopRow[] = [];
   private upgradeRows: UpgradeRow[] = [];
   private questRows: QuestRow[] = [];
+  private researchRows: { def: ResearchUpgradeConfig; el: HTMLButtonElement }[] = [];
   private worldCards = new Map<string, HTMLElement>();
   private throttle = 0;
   private audioCtx: AudioContext | null = null;
@@ -69,6 +70,7 @@ export class UIManager {
     this.rebuildUpgrades();
     this.buildWorlds();
     this.buildQuests();
+    this.buildResearch();
     this.buildAchievements();
     this.rebuildPrestige();
     this.buildOnline();
@@ -103,6 +105,7 @@ export class UIManager {
       this.notify.show({ title: 'Gespeichert', icon: '💾', kind: 'success', duration: 2000 });
     });
     this.$('btn-mute').addEventListener('click', () => this.toggleMute());
+    this.$('daily-bonus').addEventListener('click', () => this.handleDaily());
 
     this.$('modal-layer').addEventListener('click', (e) => {
       if ((e.target as HTMLElement).id === 'modal-layer') this.closeModal();
@@ -152,6 +155,17 @@ export class UIManager {
       this.notify.show({ title: 'Auftrag erfüllt!', text: `${quest.name} — jetzt einlösbar`, icon: quest.icon, kind: 'success', duration: 5000 });
     });
     this.bus.on('quest:claimed', () => { this.buildQuests(); this.buildAchievements(); this.playSound(770); });
+
+    // Research & daily reward
+    this.bus.on('research:bought', () => { this.buildResearch(); this.playSound(700); });
+    this.bus.on('daily:claimed', (r: DailyReward) => {
+      this.notify.show({
+        title: `🎁 Tagesbonus – Tag ${r.streak}`,
+        text: `+${formatMoney(r.money)}${r.influence ? ` · +${r.influence} Einfluss` : ''}`,
+        icon: '🎁', kind: 'rare', duration: 5000,
+      });
+      this.updateDaily();
+    });
   }
 
   // === Per-frame update ===================================================
@@ -166,6 +180,7 @@ export class UIManager {
       this.refreshWorldsProgress();
       if (this.activeTab === 'prestige') this.rebuildPrestige();
       if (this.activeTab === 'quests') this.refreshQuests();
+      if (this.activeTab === 'research') this.refreshResearch();
     }
   }
 
@@ -187,7 +202,30 @@ export class UIManager {
     } else {
       badge.hidden = true;
     }
+    this.setText('research-points', formatNumber(g.company.research.amount));
+    this.setText('research-rate', formatNumber(g.getResearchPerSecond(), 1));
+    this.updateDaily();
     this.refreshMilestone();
+  }
+
+  updateDaily(): void {
+    const btn = this.$('daily-bonus') as HTMLButtonElement;
+    const g = this.game;
+    btn.hidden = false;
+    if (g.canClaimDaily()) {
+      btn.disabled = false;
+      btn.classList.add('ready');
+      btn.textContent = '🎁 Tagesbonus abholen';
+    } else {
+      btn.disabled = true;
+      btn.classList.remove('ready');
+      btn.textContent = `🎁 Tagesbonus in ${formatTime(g.secondsUntilDaily())}`;
+    }
+  }
+
+  handleDaily(): void {
+    const r = this.game.claimDaily();
+    if (r) this.playSound(880);
   }
 
   refreshMilestone(): void {
@@ -450,6 +488,39 @@ export class UIManager {
       r.row.classList.toggle('claimed', r.quest.claimed);
       r.btn.disabled = !r.quest.completed || r.quest.claimed;
       r.btn.textContent = r.quest.claimed ? '✓ Eingelöst' : (r.quest.completed ? 'Einlösen' : 'Offen');
+    }
+  }
+
+  // === Research ===========================================================
+  buildResearch(): void {
+    const container = this.$('research-tree');
+    const g = this.game;
+    container.innerHTML = '';
+    this.researchRows = [];
+    for (const ru of g.researchUpgradeDefs) {
+      const owned = g.player.researchUpgrades.has(ru.id);
+      const available = g.isResearchAvailable(ru.id);
+      const card = document.createElement('button');
+      card.className = 'research-card' + (owned ? ' owned' : available ? '' : ' locked');
+      card.innerHTML = `
+        <span class="up-icon">${ru.icon ?? '🔬'}</span>
+        <span class="up-name">${ru.name}</span>
+        <span class="up-desc">${ru.description ?? ''}</span>
+        <span class="up-cost">${owned ? '✓ Erforscht' : (available ? `🔬 ${formatNumber(ru.cost)} FP` : '🔒 Voraussetzung fehlt')}</span>`;
+      if (!owned && available) card.addEventListener('click', () => this.game.buyResearch(ru.id));
+      container.appendChild(card);
+      this.researchRows.push({ def: ru, el: card });
+    }
+    this.refreshResearch();
+  }
+
+  refreshResearch(): void {
+    if (!this.researchRows.length) return;
+    const rp = this.game.company.research.amount;
+    for (const r of this.researchRows) {
+      const owned = this.game.player.researchUpgrades.has(r.def.id);
+      const available = this.game.isResearchAvailable(r.def.id);
+      r.el.classList.toggle('affordable', !owned && available && rp >= r.def.cost);
     }
   }
 
@@ -746,6 +817,7 @@ export class UIManager {
     if (tab === 'online') this.refreshLeaderboard();
     if (tab === 'prestige') this.rebuildPrestige();
     if (tab === 'quests') this.refreshQuests();
+    if (tab === 'research') this.refreshResearch();
   }
 
   applyTheme(): void {
@@ -758,6 +830,7 @@ export class UIManager {
     this.rebuildUpgrades();
     this.buildWorlds();
     this.buildQuests();
+    this.buildResearch();
     this.buildAchievements();
     this.rebuildPrestige();
     this.buildOnline();

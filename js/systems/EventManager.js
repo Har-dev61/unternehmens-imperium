@@ -35,9 +35,15 @@ export class EventManager {
         }
     }
     addEvent({ id, name, multiplier, duration, source = 'local', startedAt }) {
+        // De-dupe: a server broadcast carries a stable id and is polled repeatedly —
+        // don't stack the same event on every poll.
+        const existing = this.active.find((e) => e.baseId === id);
+        if (existing)
+            return existing;
         const start = startedAt ?? Date.now();
         const event = {
             id: id + '-' + start,
+            baseId: id,
             name,
             multiplier,
             source,

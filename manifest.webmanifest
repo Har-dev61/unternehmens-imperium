@@ -1,0 +1,15 @@
+{
+  "name": "Unternehmens-Imperium",
+  "short_name": "Imperium",
+  "description": "Idle-/Klicker-Game über den Aufbau eines Wirtschaftsimperiums.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0e1a",
+  "theme_color": "#0a0e1a",
+  "lang": "de",
+  "icons": [
+    { "src": "icon.svg", "sizes": "192x192 512x512 any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

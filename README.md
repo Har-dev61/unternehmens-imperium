@@ -59,12 +59,15 @@ Für den **Online-Modus** zusätzlich das Backend starten (siehe unten):
 | **Prestige** | „Börsengang“ → Einfluss-Punkte + dauerhafter Prestige-Upgrade-Baum |
 | **Erfolge** | 22 Achievements mit dauerhaften Einnahmen-Boni |
 | **Aufträge** | 9 Quests mit Fortschrittsbalken & Belohnungen (Geld/Einfluss/Multiplikator) |
+| **Forschung** | Zweite Ressource + Tech-Tree (9 Knoten mit Voraussetzungen), bleibt über Prestige erhalten |
+| **Tagesbonus** | Tägliche Login-Belohnung mit Streak (Kapital + Einfluss) |
 | **Goldene Deals** | Zufällige Klickziele à la „Golden Cookie“ (Glückstreffer, Kaufrausch ×7, Klick-Rausch ×777) |
 | **Events** | Zufällige Wirtschafts-Events (×2…×5) + Online-Events |
 | **Offline-Fortschritt** | Einnahmen während der Abwesenheit (mit Cap & Effizienz) |
 | **Online-Modus** | Echtes Backend (Express + SQLite) mit Konten, Cloud-Saves, Bestenliste — inkl. Simulations-Fallback |
 | **Speichern** | localStorage + Export/Import als Code + Cloud-Sync |
 | **UI/UX** | Responsives Dashboard, Themes pro Welt, Toasts, Sound-Feedback |
+| **PWA** | Installierbar & offline spielbar (Service Worker + App-Manifest; aktiv unter HTTPS/localhost) |
 
 ---
 
@@ -209,7 +212,8 @@ Effekt-Typen (die `Effect`-Union in [`src/types.ts`](src/types.ts)):
 
 **Neuer Erfolg** → [`src/data/achievements.ts`](src/data/achievements.ts) ·
 **Auftrag** → [`src/data/quests.ts`](src/data/quests.ts) ·
-**Prestige-Upgrade** → [`src/data/prestige.ts`](src/data/prestige.ts).
+**Prestige-Upgrade** → [`src/data/prestige.ts`](src/data/prestige.ts) ·
+**Forschungsknoten** → [`src/data/research.ts`](src/data/research.ts).
 Nach Änderungen `npm run build` ausführen.
 
 ---

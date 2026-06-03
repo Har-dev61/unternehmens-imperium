@@ -72,14 +72,24 @@ function boot(): void {
   window.addEventListener('beforeunload', flush);
   document.addEventListener('visibilitychange', () => { if (document.hidden) flush(); });
 
-  // Poll the (simulated) server for global events while online.
-  setInterval(async () => {
+  // Poll the server for global events while online (de-duped in EventManager).
+  const pollEvents = async (): Promise<void> => {
     if (!onlineManager.isOnline) return;
     try {
       const events = await onlineManager.fetchEvents();
       if (events.length) eventManager.ingestServerEvents(events);
     } catch { /* offline / network hiccup — ignore */ }
-  }, 60_000);
+  };
+  setInterval(pollEvents, 60_000);
+  // Sofort nach dem Login einmal pollen (statt bis zu 60 s zu warten).
+  bus.on('online:session', (s: { mode: string }) => { if (s.mode !== 'offline') pollEvents(); });
+
+  // PWA: Service Worker registrieren (greift nur in sicherem Kontext: https oder localhost).
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(() => { /* z. B. unsicherer http-Kontext – ignorieren */ });
+    });
+  }
 
   // Expose for debugging in the console.
   (window as any).game = game;

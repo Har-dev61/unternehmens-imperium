@@ -26,7 +26,19 @@ export type Effect =
   | { type: 'autoclick'; amount: number }
   | { type: 'asset'; target: string; multiplier: number }
   | { type: 'assetClass'; target: AssetType; multiplier: number }
-  | { type: 'world'; target: string; multiplier: number };
+  | { type: 'world'; target: string; multiplier: number }
+  | { type: 'researchRate'; multiplier: number };
+
+/** A node in the research tech-tree (bought with Forschungspunkten). */
+export interface ResearchUpgradeConfig {
+  id: string;
+  name: string;
+  description?: string;
+  icon?: string;
+  cost: number;            // in Forschungspunkten
+  requires?: string[];     // ids that must be researched first (tech-tree)
+  effects?: Effect[];
+}
 
 export type UpgradeCategory =
   | 'click' | 'automation' | 'employee' | 'production'
@@ -112,6 +124,8 @@ export interface OnlineSession {
 
 export interface ActiveEvent {
   id: string;
+  /** Stable source id used to de-duplicate repeated server broadcasts. */
+  baseId: string;
   name: string;
   multiplier: number;
   source: string;

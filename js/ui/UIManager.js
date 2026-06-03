@@ -1,4 +1,4 @@
-import { formatNumber, formatMoney, formatRate } from './format.js';
+import { formatNumber, formatMoney, formatRate, formatTime } from './format.js';
 import { UPGRADE_CATEGORIES } from '../data/upgrades.js';
 /**
  * Owns all DOM rendering and input handling. It never mutates game models
@@ -13,6 +13,7 @@ export class UIManager {
     shopRows = [];
     upgradeRows = [];
     questRows = [];
+    researchRows = [];
     worldCards = new Map();
     throttle = 0;
     audioCtx = null;
@@ -38,6 +39,7 @@ export class UIManager {
         this.rebuildUpgrades();
         this.buildWorlds();
         this.buildQuests();
+        this.buildResearch();
         this.buildAchievements();
         this.rebuildPrestige();
         this.buildOnline();
@@ -67,6 +69,7 @@ export class UIManager {
             this.notify.show({ title: 'Gespeichert', icon: '💾', kind: 'success', duration: 2000 });
         });
         this.$('btn-mute').addEventListener('click', () => this.toggleMute());
+        this.$('daily-bonus').addEventListener('click', () => this.handleDaily());
         this.$('modal-layer').addEventListener('click', (e) => {
             if (e.target.id === 'modal-layer')
                 this.closeModal();
@@ -116,6 +119,16 @@ export class UIManager {
             this.notify.show({ title: 'Auftrag erfüllt!', text: `${quest.name} — jetzt einlösbar`, icon: quest.icon, kind: 'success', duration: 5000 });
         });
         this.bus.on('quest:claimed', () => { this.buildQuests(); this.buildAchievements(); this.playSound(770); });
+        // Research & daily reward
+        this.bus.on('research:bought', () => { this.buildResearch(); this.playSound(700); });
+        this.bus.on('daily:claimed', (r) => {
+            this.notify.show({
+                title: `🎁 Tagesbonus – Tag ${r.streak}`,
+                text: `+${formatMoney(r.money)}${r.influence ? ` · +${r.influence} Einfluss` : ''}`,
+                icon: '🎁', kind: 'rare', duration: 5000,
+            });
+            this.updateDaily();
+        });
     }
     // === Per-frame update ===================================================
     onTick(dt) {
@@ -131,6 +144,8 @@ export class UIManager {
                 this.rebuildPrestige();
             if (this.activeTab === 'quests')
                 this.refreshQuests();
+            if (this.activeTab === 'research')
+                this.refreshResearch();
         }
     }
     updateStats() {
@@ -151,7 +166,30 @@ export class UIManager {
         else {
             badge.hidden = true;
         }
+        this.setText('research-points', formatNumber(g.company.research.amount));
+        this.setText('research-rate', formatNumber(g.getResearchPerSecond(), 1));
+        this.updateDaily();
         this.refreshMilestone();
+    }
+    updateDaily() {
+        const btn = this.$('daily-bonus');
+        const g = this.game;
+        btn.hidden = false;
+        if (g.canClaimDaily()) {
+            btn.disabled = false;
+            btn.classList.add('ready');
+            btn.textContent = '🎁 Tagesbonus abholen';
+        }
+        else {
+            btn.disabled = true;
+            btn.classList.remove('ready');
+            btn.textContent = `🎁 Tagesbonus in ${formatTime(g.secondsUntilDaily())}`;
+        }
+    }
+    handleDaily() {
+        const r = this.game.claimDaily();
+        if (r)
+            this.playSound(880);
     }
     refreshMilestone() {
         const next = this.game.worlds.find((w) => !w.unlocked && w.unlockAt);
@@ -408,6 +446,39 @@ export class UIManager {
             r.row.classList.toggle('claimed', r.quest.claimed);
             r.btn.disabled = !r.quest.completed || r.quest.claimed;
             r.btn.textContent = r.quest.claimed ? '✓ Eingelöst' : (r.quest.completed ? 'Einlösen' : 'Offen');
+        }
+    }
+    // === Research ===========================================================
+    buildResearch() {
+        const container = this.$('research-tree');
+        const g = this.game;
+        container.innerHTML = '';
+        this.researchRows = [];
+        for (const ru of g.researchUpgradeDefs) {
+            const owned = g.player.researchUpgrades.has(ru.id);
+            const available = g.isResearchAvailable(ru.id);
+            const card = document.createElement('button');
+            card.className = 'research-card' + (owned ? ' owned' : available ? '' : ' locked');
+            card.innerHTML = `
+        <span class="up-icon">${ru.icon ?? '🔬'}</span>
+        <span class="up-name">${ru.name}</span>
+        <span class="up-desc">${ru.description ?? ''}</span>
+        <span class="up-cost">${owned ? '✓ Erforscht' : (available ? `🔬 ${formatNumber(ru.cost)} FP` : '🔒 Voraussetzung fehlt')}</span>`;
+            if (!owned && available)
+                card.addEventListener('click', () => this.game.buyResearch(ru.id));
+            container.appendChild(card);
+            this.researchRows.push({ def: ru, el: card });
+        }
+        this.refreshResearch();
+    }
+    refreshResearch() {
+        if (!this.researchRows.length)
+            return;
+        const rp = this.game.company.research.amount;
+        for (const r of this.researchRows) {
+            const owned = this.game.player.researchUpgrades.has(r.def.id);
+            const available = this.game.isResearchAvailable(r.def.id);
+            r.el.classList.toggle('affordable', !owned && available && rp >= r.def.cost);
         }
     }
     // === Golden Deals =======================================================
@@ -702,6 +773,8 @@ export class UIManager {
             this.rebuildPrestige();
         if (tab === 'quests')
             this.refreshQuests();
+        if (tab === 'research')
+            this.refreshResearch();
     }
     applyTheme() {
         document.body.dataset.theme = this.game.getActiveWorld()?.theme ?? 'local';
@@ -712,6 +785,7 @@ export class UIManager {
         this.rebuildUpgrades();
         this.buildWorlds();
         this.buildQuests();
+        this.buildResearch();
         this.buildAchievements();
         this.rebuildPrestige();
         this.buildOnline();

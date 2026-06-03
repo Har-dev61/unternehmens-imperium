@@ -317,6 +317,31 @@ h3 { font-size: 0.95rem; margin: 0.9rem 0 0.5rem; color: var(--muted); text-tran
 @keyframes goldenPulse { from { box-shadow: 0 0 18px 4px rgba(245,158,11,0.5); } to { box-shadow: 0 0 42px 12px rgba(245,158,11,0.9); } }
 @keyframes goldenIn { from { transform: scale(0) rotate(-45deg); } to { transform: scale(1) rotate(0); } }
 
+/* ===== Research ===== */
+.research-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
+.research-stats { font-size: 0.95rem; font-weight: 700; color: var(--accent); }
+.research-rate { color: var(--good); font-size: 0.8rem; font-weight: 600; }
+.hint { color: var(--muted); font-size: 0.8rem; margin: 0.3rem 0 0.7rem; }
+.research-tree { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 0.5rem; }
+.research-card { display: flex; flex-direction: column; gap: 0.2rem; text-align: left;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; padding: 0.6rem; opacity: 0.6; transition: all 0.15s ease; }
+.research-card.affordable { opacity: 1; }
+.research-card.affordable:hover { border-color: var(--accent); transform: translateY(-2px); }
+.research-card.owned { opacity: 1; border-color: var(--good); }
+.research-card.owned .up-cost { color: var(--good); }
+.research-card.locked { opacity: 0.4; }
+.research-card .up-cost { color: var(--warn); margin-top: 0.2rem; font-size: 0.82rem; }
+.research-card.affordable .up-cost { color: var(--good); }
+
+/* ===== Daily bonus ===== */
+.daily-bonus { width: 100%; border: 1px solid var(--border); background: var(--panel-2); color: var(--muted);
+  border-radius: 10px; padding: 0.5rem 0.7rem; font-weight: 700; font-size: 0.85rem; transition: all 0.15s ease; }
+.daily-bonus.ready { border-color: var(--warn); color: var(--text);
+  background: color-mix(in srgb, var(--warn) 18%, var(--panel-2)); cursor: pointer; animation: dailyPulse 1.4s ease-in-out infinite; }
+.daily-bonus.ready:hover { background: color-mix(in srgb, var(--warn) 32%, var(--panel-2)); }
+.daily-bonus:disabled { cursor: default; }
+@keyframes dailyPulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 45%, transparent); } 50% { box-shadow: 0 0 0 7px transparent; } }
+
 /* ===== Online ===== */
 .online-status { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 0.8rem; margin-bottom: 0.7rem; }
 .online-transport { font-size: 0.76rem; color: var(--muted); margin-top: 0.25rem; }

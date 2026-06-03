@@ -124,5 +124,29 @@ ok(game2.player.prestigePoints === 10, 'save restores influence');
 ok(game2.getWorld('national').unlocked, 'save restores world unlocks');
 ok(game2.getAsset('local-0').count === game.getAsset('local-0').count, 'save restores asset counts');
 
+// --- Research tree ---
+game.company.money.amount = 1e9;
+game.buyAsset('local-2', 30); // Heimbüro (Gebäude) → erzeugt Forschung
+game.computeDerived();
+ok(game.getResearchPerSecond() > 0, 'assets generate research/s');
+game.company.research.amount = 100;
+const gmBeforeR = game.company.globalMultiplier;
+ok(game.buyResearch('r-basics'), 'buy root research node');
+ok(game.company.globalMultiplier > gmBeforeR, 'research effect applied to global multiplier');
+ok(game.isResearchAvailable('r-materials'), 'child node unlocks after prerequisite');
+ok(!game.isResearchAvailable('r-data'), 'deep node stays locked without prereqs');
+ok(!game.buyResearch('r-data'), 'cannot buy a locked research node');
+
+// --- Research persists through prestige ---
+game.player.runEarned = 1e12;
+game.prestige();
+ok(game.player.researchUpgrades.has('r-basics'), 'research persists through prestige');
+
+// --- Daily reward ---
+ok(game.canClaimDaily(), 'daily reward claimable initially');
+const daily = game.claimDaily();
+ok(daily && daily.streak === 1, 'daily streak starts at 1');
+ok(!game.canClaimDaily(), 'daily reward not claimable twice in a row');
+
 console.log(`\n${fail === 0 ? '✅' : '❌'} smoke test: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

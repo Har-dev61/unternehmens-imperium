@@ -66,8 +66,8 @@ function boot() {
     window.addEventListener('beforeunload', flush);
     document.addEventListener('visibilitychange', () => { if (document.hidden)
         flush(); });
-    // Poll the (simulated) server for global events while online.
-    setInterval(async () => {
+    // Poll the server for global events while online (de-duped in EventManager).
+    const pollEvents = async () => {
         if (!onlineManager.isOnline)
             return;
         try {
@@ -76,7 +76,17 @@ function boot() {
                 eventManager.ingestServerEvents(events);
         }
         catch { /* offline / network hiccup — ignore */ }
-    }, 60_000);
+    };
+    setInterval(pollEvents, 60_000);
+    // Sofort nach dem Login einmal pollen (statt bis zu 60 s zu warten).
+    bus.on('online:session', (s) => { if (s.mode !== 'offline')
+        pollEvents(); });
+    // PWA: Service Worker registrieren (greift nur in sicherem Kontext: https oder localhost).
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('sw.js').catch(() => { });
+        });
+    }
     // Expose for debugging in the console.
     window.game = game;
     console.info('%c🏢 Unternehmens-Imperium gestartet', 'color:#4ade80;font-weight:bold');

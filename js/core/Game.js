@@ -11,6 +11,7 @@ import { UPGRADE_DEFS } from '../data/upgrades.js';
 import { ACHIEVEMENT_DEFS } from '../data/achievements.js';
 import { PRESTIGE_UPGRADES } from '../data/prestige.js';
 import { QUEST_DEFS } from '../data/quests.js';
+import { RESEARCH_DEFS } from '../data/research.js';
 /**
  * Central orchestrator. Owns all model objects and systems, runs the game
  * loop, and is the single place where the economy maths and the declarative
@@ -29,6 +30,7 @@ export class Game {
     achievements;
     quests;
     prestigeUpgradeDefs;
+    researchUpgradeDefs;
     goldenDeal;
     /** Temporary click-value boost from a Golden Deal "click frenzy". */
     clickFrenzy = { mult: 1, until: 0 };
@@ -41,6 +43,7 @@ export class Game {
     _clickValue = 1;
     _perSecond = 0;
     _eventMultiplier = 1;
+    _researchPerSecond = 0;
     running = false;
     lastFrame = 0;
     rafId;
@@ -56,6 +59,7 @@ export class Game {
         this.achievements = ACHIEVEMENT_DEFS.map((def) => new Achievement(def));
         this.quests = QUEST_DEFS.map((def) => new Quest(def));
         this.prestigeUpgradeDefs = PRESTIGE_UPGRADES;
+        this.researchUpgradeDefs = RESEARCH_DEFS;
         this.goldenDeal = new GoldenDeal(this.bus);
         for (const w of this.worlds)
             this.worldIndex.set(w.id, w);
@@ -93,6 +97,7 @@ export class Game {
         c.clickPercentOfProduction = 0;
         c.globalMultiplier = 1;
         c.autoClicksPerSecond = 0;
+        c.researchRateMult = 1;
         for (const w of this.worlds) {
             w.upgradeMultiplier = 1;
             for (const a of w.assets)
@@ -106,6 +111,12 @@ export class Game {
         for (const pu of this.prestigeUpgradeDefs) {
             if (this.player.prestigeUpgrades.has(pu.id) && pu.effects) {
                 for (const e of pu.effects)
+                    this.applyEffect(e);
+            }
+        }
+        for (const ru of this.researchUpgradeDefs) {
+            if (this.player.researchUpgrades.has(ru.id) && ru.effects) {
+                for (const e of ru.effects)
                     this.applyEffect(e);
             }
         }
@@ -157,6 +168,9 @@ export class Game {
                     w.upgradeMultiplier *= e.multiplier;
                 break;
             }
+            case 'researchRate':
+                c.researchRateMult *= e.multiplier;
+                break;
         }
     }
     /** Refresh cached passive €/s, click value and total €/s. */
@@ -176,11 +190,15 @@ export class Game {
         this._passivePerSecond = passive;
         this._clickValue = clickValue;
         this._perSecond = passive + autoIncome;
+        // Forschung: Assets erzeugen Forschungspunkte (Gebäude voll, Mitarbeiter halb).
+        this._researchPerSecond = (this.getBuildingCount() + this.getEmployeeCount() * 0.5) * c.researchRateMult;
+        this.company.research.perSecond = this._researchPerSecond;
     }
     getPerSecond() { return this._perSecond; }
     getPassivePerSecond() { return this._passivePerSecond; }
     getClickValue() { return this._clickValue; }
     getEventMultiplier() { return this._eventMultiplier; }
+    getResearchPerSecond() { return this._researchPerSecond; }
     /** Firmenwert: liquid capital plus one minute of capitalised revenue. */
     getValuation() {
         return this.company.money.amount + this._perSecond * 60;
@@ -239,6 +257,27 @@ export class Game {
         this.player.prestigeUpgrades.add(id);
         this.recalculate();
         this.bus.emit('prestige:upgrade', { id });
+        return true;
+    }
+    /** Are a research node's prerequisites all researched? */
+    isResearchAvailable(id) {
+        const ru = this.researchUpgradeDefs.find((x) => x.id === id);
+        if (!ru)
+            return false;
+        return (ru.requires ?? []).every((req) => this.player.researchUpgrades.has(req));
+    }
+    /** Buy a research-tree node with Forschungspunkten. */
+    buyResearch(id) {
+        if (this.player.researchUpgrades.has(id))
+            return false;
+        const ru = this.researchUpgradeDefs.find((x) => x.id === id);
+        if (!ru || !this.isResearchAvailable(id))
+            return false;
+        if (!this.company.research.spend(ru.cost))
+            return false;
+        this.player.researchUpgrades.add(id);
+        this.recalculate();
+        this.bus.emit('research:bought', { id });
         return true;
     }
     setActiveWorld(id) {
@@ -369,6 +408,34 @@ export class Game {
         this.checkProgress();
         return true;
     }
+    // === Daily reward =======================================================
+    DAILY_COOLDOWN = 20 * 3600 * 1000; // 20 h bis zur nächsten Belohnung
+    DAILY_STREAK_WINDOW = 48 * 3600 * 1000; // innerhalb 48 h läuft der Streak weiter
+    canClaimDaily() {
+        return Date.now() - this.player.lastDailyClaim >= this.DAILY_COOLDOWN;
+    }
+    /** Sekunden bis zum nächsten Tagesbonus (0 = jetzt verfügbar). */
+    secondsUntilDaily() {
+        return Math.max(0, Math.ceil((this.player.lastDailyClaim + this.DAILY_COOLDOWN - Date.now()) / 1000));
+    }
+    claimDaily() {
+        if (!this.canClaimDaily())
+            return null;
+        const continues = Date.now() - this.player.lastDailyClaim <= this.DAILY_STREAK_WINDOW;
+        this.player.dailyStreak = continues ? this.player.dailyStreak + 1 : 1;
+        this.player.lastDailyClaim = Date.now();
+        const influence = Math.min(10, Math.max(1, Math.floor(this.player.dailyStreak / 2)));
+        const money = Math.max(this._perSecond * 1800, 1000); // ~30 min Einnahmen, min. €1000
+        this.player.prestigePoints += influence;
+        this.company.money.add(money);
+        this.player.runEarned += money;
+        this.player.lifetimeEarned += money;
+        this.recalculate();
+        const reward = { streak: this.player.dailyStreak, influence, money };
+        this.bus.emit('daily:claimed', reward);
+        this.checkProgress();
+        return reward;
+    }
     // === Loop ===============================================================
     tick(dt) {
         this.eventManager.update(dt);
@@ -380,6 +447,9 @@ export class Game {
             this.player.runEarned += income;
             this.player.lifetimeEarned += income;
         }
+        const rp = this._researchPerSecond * dt;
+        if (rp > 0)
+            this.company.research.add(rp);
         this.company.money.perSecond = this._perSecond;
         this.player.playtimeSeconds += dt;
         this.checkProgress();

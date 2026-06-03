@@ -1,0 +1,34 @@
+/**
+ * Forschungsbaum — wird mit Forschungspunkten (RP) gekauft. Knoten können
+ * Voraussetzungen (`requires`) haben und bilden so einen kleinen Tech-Tree.
+ * Forschung bleibt über Prestige erhalten (dauerhafte Meta-Progression).
+ * Effekte nutzen dieselbe Effect-Union wie normale Upgrades.
+ */
+import type { ResearchUpgradeConfig } from '../types.js';
+
+export const RESEARCH_DEFS: ResearchUpgradeConfig[] = [
+  { id: 'r-basics', name: 'Grundlagenforschung', icon: '🔬', cost: 10,
+    description: '+25 % auf alle Einnahmen.', effects: [{ type: 'global', multiplier: 1.25 }] },
+
+  { id: 'r-automation', name: 'Automatisierungslehre', icon: '⚙️', cost: 30, requires: ['r-basics'],
+    description: '+5 automatische Klicks/Sekunde.', effects: [{ type: 'autoclick', amount: 5 }] },
+  { id: 'r-materials', name: 'Materialwissenschaft', icon: '🧱', cost: 30, requires: ['r-basics'],
+    description: '+50 % Einnahmen aus Gebäuden.', effects: [{ type: 'assetClass', target: 'building', multiplier: 1.5 }] },
+  { id: 'r-hr', name: 'Arbeitspsychologie', icon: '🧑‍🏫', cost: 30, requires: ['r-basics'],
+    description: '+50 % Einnahmen aus Mitarbeitern.', effects: [{ type: 'assetClass', target: 'employee', multiplier: 1.5 }] },
+
+  { id: 'r-data', name: 'Datenanalyse', icon: '📊', cost: 100, requires: ['r-materials', 'r-hr'],
+    description: '+50 % auf alle Einnahmen.', effects: [{ type: 'global', multiplier: 1.5 }] },
+  { id: 'r-robotics', name: 'Robotik', icon: '🦾', cost: 250, requires: ['r-automation'],
+    description: 'Gebäude ×2 und +10 automatische Klicks/Sekunde.',
+    effects: [{ type: 'assetClass', target: 'building', multiplier: 2 }, { type: 'autoclick', amount: 10 }] },
+
+  { id: 'r-ml', name: 'Maschinelles Lernen', icon: '🧠', cost: 600, requires: ['r-data'],
+    description: 'Einnahmen ×2 und Forschungsrate ×2.',
+    effects: [{ type: 'global', multiplier: 2 }, { type: 'researchRate', multiplier: 2 }] },
+  { id: 'r-fusion', name: 'Fusionsenergie', icon: '⚛️', cost: 1500, requires: ['r-robotics', 'r-ml'],
+    description: '×3 auf alle Einnahmen.', effects: [{ type: 'global', multiplier: 3 }] },
+  { id: 'r-singularity', name: 'Selbstverbessernde KI', icon: '🌌', cost: 5000, requires: ['r-fusion'],
+    description: '×5 Einnahmen und Forschungsrate ×3.',
+    effects: [{ type: 'global', multiplier: 5 }, { type: 'researchRate', multiplier: 3 }] },
+];

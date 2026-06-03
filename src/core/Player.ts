@@ -3,11 +3,14 @@ export interface PlayerData {
   prestigePoints: number;
   prestigeLevel: number;
   prestigeUpgrades: string[];
+  researchUpgrades: string[];
   runEarned: number;
   lifetimeEarned: number;
   totalClicks: number;
   playtimeSeconds: number;
   goldenClicks: number;
+  lastDailyClaim: number;
+  dailyStreak: number;
 }
 
 /**
@@ -21,8 +24,16 @@ export class Player {
   prestigePoints = 0;
   prestigeLevel = 0;
   prestigeUpgrades = new Set<string>();
+  /** Researched tech-tree node ids (persist through prestige). */
+  researchUpgrades = new Set<string>();
   /** Combined prestige income multiplier; set by Game.recalculate(). */
   prestigeMultiplier = 1;
+
+  // --- Daily reward ---
+  /** Timestamp (ms) of the last claimed daily reward. */
+  lastDailyClaim = 0;
+  /** Consecutive-day streak. */
+  dailyStreak = 0;
 
   // --- Statistics ---
   runEarned = 0;
@@ -47,11 +58,14 @@ export class Player {
       prestigePoints: this.prestigePoints,
       prestigeLevel: this.prestigeLevel,
       prestigeUpgrades: [...this.prestigeUpgrades],
+      researchUpgrades: [...this.researchUpgrades],
       runEarned: this.runEarned,
       lifetimeEarned: this.lifetimeEarned,
       totalClicks: this.totalClicks,
       playtimeSeconds: this.playtimeSeconds,
       goldenClicks: this.goldenClicks,
+      lastDailyClaim: this.lastDailyClaim,
+      dailyStreak: this.dailyStreak,
     };
   }
 
@@ -61,10 +75,13 @@ export class Player {
     this.prestigePoints = data.prestigePoints ?? 0;
     this.prestigeLevel = data.prestigeLevel ?? 0;
     this.prestigeUpgrades = new Set(data.prestigeUpgrades ?? []);
+    this.researchUpgrades = new Set(data.researchUpgrades ?? []);
     this.runEarned = data.runEarned ?? 0;
     this.lifetimeEarned = data.lifetimeEarned ?? 0;
     this.totalClicks = data.totalClicks ?? 0;
     this.playtimeSeconds = data.playtimeSeconds ?? 0;
     this.goldenClicks = data.goldenClicks ?? 0;
+    this.lastDailyClaim = data.lastDailyClaim ?? 0;
+    this.dailyStreak = data.dailyStreak ?? 0;
   }
 }

@@ -136,12 +136,32 @@ Die SQLite-Datei liegt unter `/var/www/imperium/server/imperium.db`
 sqlite3 /var/www/imperium/server/imperium.db ".backup '/var/backups/imperium-$(date +\%F).db'"
 ```
 
-## Wichtige Sicherheits-Hinweise (für echten Betrieb)
+## Sicherheit
 
-Das Backend ist bewusst kompakt. Vor produktivem Einsatz ergänzen:
+Bereits im Backend umgesetzt:
 
-- **Rate-Limiting** (z. B. `express-rate-limit`) gegen Brute-Force/Spam.
-- **Token-Ablauf** statt dauerhafter Bearer-Tokens.
-- **Anti-Cheat**: serverseitige Plausibilitätsprüfung der eingereichten Firmenwerte
-  (aktuell vertraut die Bestenliste den Client-Angaben).
-- Regelmäßige `apt upgrade` / Node-Sicherheitsupdates.
+- ✅ **Rate-Limiting** (`express-rate-limit`): 120 Anfragen/Min./IP allgemein,
+  20 Anmeldeversuche/15 Min./IP auf `/api/auth/*` (gegen Brute-Force/Spam).
+- ✅ **Token-Ablauf**: Bearer-Tokens laufen nach 7 Tagen ab; danach fordert der
+  Client automatisch eine erneute Anmeldung an.
+- ✅ **Anti-Cheat**: serverseitige Plausibilitätsprüfung der eingereichten
+  Firmenwerte (endlich, Hard-Cap, exponentielle Schranke übers Kontoalter).
+- ✅ **Passwort-Hashing** (scrypt + Salt), `trust proxy` korrekt für IP-Limits.
+
+### Automatische Sicherheitsupdates (empfohlen)
+
+```bash
+sudo apt install -y unattended-upgrades
+sudo dpkg-reconfigure -plow unattended-upgrades   # „Ja" wählen
+```
+
+Das installiert Debian-Sicherheitsupdates automatisch. Node aktualisierst du bei
+Bedarf über das NodeSource-Repo:
+
+```bash
+sudo apt update && sudo apt upgrade -y     # inkl. nodejs, wenn neue 24.x-Version da ist
+sudo systemctl restart imperium
+```
+
+> Für sehr exponierte Instanzen zusätzlich erwägen: Token-Rotation/-Widerruf,
+> echte serverseitige Spielsimulation als Anti-Cheat, sowie `fail2ban` für SSH.

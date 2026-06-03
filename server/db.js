@@ -22,6 +22,7 @@ db.exec(`
     password_hash TEXT,
     salt          TEXT,
     token         TEXT,
+    token_expires INTEGER NOT NULL DEFAULT 0,
     is_guest      INTEGER NOT NULL DEFAULT 0,
     created_at    INTEGER NOT NULL
   );
@@ -44,15 +45,20 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_lb_valuation ON leaderboard(valuation DESC);
 `);
 
+// Migration für DBs, die noch vor dem Token-Ablauf angelegt wurden.
+try {
+  db.exec('ALTER TABLE users ADD COLUMN token_expires INTEGER NOT NULL DEFAULT 0');
+} catch { /* Spalte existiert bereits — ok */ }
+
 // --- Prepared statements ---------------------------------------------------
 const stmts = {
   userByToken: db.prepare('SELECT * FROM users WHERE token = ?'),
   userByName: db.prepare('SELECT * FROM users WHERE username = ?'),
   insertUser: db.prepare(
-    `INSERT INTO users (username, password_hash, salt, token, is_guest, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO users (username, password_hash, salt, token, token_expires, is_guest, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   ),
-  setToken: db.prepare('UPDATE users SET token = ? WHERE id = ?'),
+  setToken: db.prepare('UPDATE users SET token = ?, token_expires = ? WHERE id = ?'),
   getSave: db.prepare('SELECT data, updated_at FROM saves WHERE user_id = ?'),
   putSave: db.prepare(
     `INSERT INTO saves (user_id, data, updated_at) VALUES (?, ?, ?)
@@ -73,11 +79,11 @@ const stmts = {
 export const queries = {
   getUserByToken: (token) => stmts.userByToken.get(token),
   getUserByName: (name) => stmts.userByName.get(name),
-  createUser: ({ username, passwordHash = null, salt = null, token, isGuest = 0 }) => {
-    const info = stmts.insertUser.run(username, passwordHash, salt, token, isGuest, Date.now());
+  createUser: ({ username, passwordHash = null, salt = null, token, tokenExpires = 0, isGuest = 0 }) => {
+    const info = stmts.insertUser.run(username, passwordHash, salt, token, tokenExpires, isGuest, Date.now());
     return stmts.userByName.get(username) ?? { id: info.lastInsertRowid, username };
   },
-  setToken: (userId, token) => stmts.setToken.run(token, userId),
+  setToken: (userId, token, tokenExpires) => stmts.setToken.run(token, tokenExpires, userId),
   getSave: (userId) => stmts.getSave.get(userId),
   putSave: (userId, data) => stmts.putSave.run(userId, data, Date.now()),
   upsertLeaderboard: (userId, name, valuation, prestige) =>

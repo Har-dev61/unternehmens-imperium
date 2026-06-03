@@ -157,6 +157,9 @@ export class OnlineManager {
     const res = await fetch(this.serverUrl + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
     this.serverReachable = true;
     if (!res.ok) {
+      // Abgelaufenes/ungültiges Token bei einem authentifizierten Aufruf →
+      // Sitzung beenden, damit die UI eine erneute Anmeldung anbieten kann.
+      if (res.status === 401 && auth) this.handleExpiredToken();
       let msg = 'HTTP ' + res.status;
       try { msg = (await res.json()).error ?? msg; } catch { /* keep default */ }
       const err: HttpError = new Error(msg);
@@ -164,6 +167,15 @@ export class OnlineManager {
       throw err;
     }
     return res.json();
+  }
+
+  private handleExpiredToken(): void {
+    this.token = null;
+    localStorage.removeItem(this.storageKey + '-token');
+    this.usingServer = false;
+    this.session = { mode: 'offline', username: null, lastSync: 0 };
+    this.bus.emit('online:session', this.session);
+    this.bus.emit('online:expired');
   }
 
   private applyAuth(r: any): OnlineSession {

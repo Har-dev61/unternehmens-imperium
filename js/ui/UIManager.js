@@ -106,6 +106,9 @@ export class UIManager {
             this.notify.show({ title: e.name, text: `×${e.multiplier} Einnahmen`, icon: '🎉', kind: 'rare', duration: 5000 });
         });
         this.bus.on('online:session', () => this.buildOnline());
+        this.bus.on('online:expired', () => this.notify.show({
+            title: 'Sitzung abgelaufen', text: 'Bitte melde dich erneut an.', icon: '🔑', kind: 'info', duration: 6000,
+        }));
         this.bus.on('golden:spawn', (deal) => this.spawnGolden(deal));
         this.bus.on('golden:expire', () => this.removeGolden());
         this.bus.on('quest:complete', ({ quest }) => {

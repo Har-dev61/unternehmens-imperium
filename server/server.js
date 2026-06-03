@@ -12,12 +12,14 @@
  *   GET  /api/events                     → { events: [...] }
  *   GET  /api/health                     → { ok, users }
  *
- * Auth is a simple bearer token (random hex) stored on the user row.
- * Passwords are scrypt-hashed with a per-user salt. This is a compact but
- * genuine implementation — for production add HTTPS, rate-limiting and
- * token expiry.
+ * Auth is a bearer token (random hex) stored on the user row with a 7-day
+ * expiry; passwords are scrypt-hashed with a per-user salt. Hardening included:
+ * rate-limiting (general + strict on auth), token expiry, and a server-side
+ * plausibility check on submitted valuations (anti-cheat). For production also
+ * terminate TLS at nginx and keep the OS/Node patched (see deploy/DEPLOY.md).
  */
 import express from 'express';
+import { rateLimit } from 'express-rate-limit';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { queries, seedRivalsIfEmpty } from './db.js';
 
@@ -25,7 +27,19 @@ const PORT = process.env.PORT ?? 3000;
 // In production bind to 127.0.0.1 so the backend is only reachable through the
 // reverse proxy (nginx); default 0.0.0.0 keeps local dev convenient.
 const HOST = process.env.HOST ?? '0.0.0.0';
+
+/** Bearer-Token-Lebensdauer (danach ist eine erneute Anmeldung nötig). */
+const TOKEN_TTL = 7 * 24 * 3600 * 1000; // 7 Tage
+
+// Anti-Cheat: Plausibilitätsgrenzen für eingereichte Firmenwerte.
+const HARD_CAP = 1e60;          // blockt Overflow / Unfug (Infinity, 1e308 …)
+const SCORE_BASELINE = 1e7;     // Bezugsgröße der Wachstumsschranke
+const MAX_GROWTH_PER_SEC = 1.5; // exponentielle Obergrenze je Sekunde Kontoalter
+
 const app = express();
+// Hinter nginx gibt es genau einen Proxy-Hop → korrekte Client-IP aus
+// X-Forwarded-For, ohne IP-Spoofing für das Rate-Limiting zu erlauben.
+app.set('trust proxy', 1);
 app.use(express.json({ limit: '4mb' }));
 
 // --- CORS (the static client runs on a different origin) -------------------
@@ -37,8 +51,28 @@ app.use((req, res, next) => {
   next();
 });
 
+// --- Rate-Limiting ---------------------------------------------------------
+// Allgemeines Limit gegen Spam (normales Spiel bleibt weit darunter).
+const apiLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 120, // pro IP und Minute
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Zu viele Anfragen – bitte kurz warten.' },
+});
+// Striktes Limit gegen Brute-Force auf die Anmelde-Endpunkte.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  limit: 20, // pro IP und 15 Minuten
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Zu viele Anmeldeversuche – bitte später erneut versuchen.' },
+});
+app.use('/api', apiLimiter);
+
 // --- Auth helpers ----------------------------------------------------------
 const makeToken = () => randomBytes(24).toString('hex');
+const tokenExpiry = () => Date.now() + TOKEN_TTL;
 
 function hashPassword(password, salt = randomBytes(16).toString('hex')) {
   return { salt, hash: scryptSync(password, salt, 64).toString('hex') };
@@ -49,49 +83,58 @@ function verifyPassword(password, salt, hash) {
   return known.length === test.length && timingSafeEqual(known, test);
 }
 
-/** Express middleware: require a valid bearer token, attach req.user. */
-function requireAuth(req, res, next) {
+/** Look up the user for a request's bearer token — null if missing/expired. */
+function userFromRequest(req) {
   const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
-  const user = token && queries.getUserByToken(token);
-  if (!user) return res.status(401).json({ error: 'Nicht autorisiert' });
+  if (!token) return null;
+  const user = queries.getUserByToken(token);
+  if (!user) return null;
+  if (!user.token_expires || user.token_expires < Date.now()) return null; // abgelaufen
+  return user;
+}
+
+/** Express middleware: require a valid, unexpired bearer token. */
+function requireAuth(req, res, next) {
+  const user = userFromRequest(req);
+  if (!user) return res.status(401).json({ error: 'Nicht autorisiert oder Sitzung abgelaufen' });
   req.user = user;
   next();
 }
 
-/** Optional auth: attach req.user if a token is present, but never reject. */
+/** Optional auth: attach req.user if a valid token is present, never reject. */
 function optionalAuth(req, _res, next) {
-  const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
-  req.user = token ? queries.getUserByToken(token) : null;
+  req.user = userFromRequest(req);
   next();
 }
 
 // --- Auth routes -----------------------------------------------------------
-app.post('/api/auth/guest', (req, res) => {
+app.post('/api/auth/guest', authLimiter, (req, res) => {
   const username = 'Gast-' + randomBytes(2).toString('hex').toUpperCase();
   const token = makeToken();
-  queries.createUser({ username, token, isGuest: 1 });
-  res.json({ username, token, mode: 'guest' });
+  queries.createUser({ username, token, tokenExpires: tokenExpiry(), isGuest: 1 });
+  res.json({ username, token, mode: 'guest', expiresIn: TOKEN_TTL });
 });
 
-app.post('/api/auth/register', (req, res) => {
+app.post('/api/auth/register', authLimiter, (req, res) => {
   const { username, password } = req.body ?? {};
   if (!username || !password) return res.status(400).json({ error: 'Benutzername und Passwort nötig' });
+  if (String(password).length < 4) return res.status(400).json({ error: 'Passwort zu kurz (min. 4 Zeichen)' });
   if (queries.getUserByName(username)) return res.status(409).json({ error: 'Benutzername bereits vergeben' });
   const { salt, hash } = hashPassword(password);
   const token = makeToken();
-  queries.createUser({ username, passwordHash: hash, salt, token, isGuest: 0 });
-  res.json({ username, token, mode: 'account' });
+  queries.createUser({ username: String(username).slice(0, 40), passwordHash: hash, salt, token, tokenExpires: tokenExpiry(), isGuest: 0 });
+  res.json({ username, token, mode: 'account', expiresIn: TOKEN_TTL });
 });
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', authLimiter, (req, res) => {
   const { username, password } = req.body ?? {};
   const user = username && queries.getUserByName(username);
   if (!user || user.is_guest || !verifyPassword(password ?? '', user.salt, user.password_hash)) {
     return res.status(401).json({ error: 'Falscher Benutzername oder Passwort' });
   }
   const token = makeToken();
-  queries.setToken(user.id, token);
-  res.json({ username: user.username, token, mode: 'account' });
+  queries.setToken(user.id, token, tokenExpiry());
+  res.json({ username: user.username, token, mode: 'account', expiresIn: TOKEN_TTL });
 });
 
 // --- Cloud saves -----------------------------------------------------------
@@ -123,12 +166,37 @@ app.get('/api/leaderboard', optionalAuth, (req, res) => {
   res.json({ entries });
 });
 
+/**
+ * Plausibilitätsprüfung eines eingereichten Firmenwerts (Anti-Cheat).
+ * Echte Wasserdichtigkeit bräuchte eine serverseitige Spielsimulation; diese
+ * Heuristik blockt aber die naheliegenden Manipulationen, ohne legitime
+ * Spieler auszubremsen:
+ *   1. endlich, nicht negativ, unter einem harten Maximum (kein Infinity/Overflow)
+ *   2. eine exponentielle Obergrenze, die mit dem Kontoalter rasch mitwächst —
+ *      so kann ein frisch erstelltes Konto keine astronomischen Werte melden,
+ *      während ein länger aktives Konto praktisch unbegrenzt ist.
+ * Liefert eine Fehlermeldung (string) oder null, wenn der Wert ok ist.
+ */
+function scoreError(user, valuation) {
+  if (typeof valuation !== 'number' || !Number.isFinite(valuation) || valuation < 0) {
+    return 'Ungültiger Firmenwert';
+  }
+  if (valuation > HARD_CAP) return 'Unrealistisch hoher Firmenwert';
+  const ageSec = Math.max(1, (Date.now() - (user.created_at ?? 0)) / 1000);
+  const maxByAge = SCORE_BASELINE * Math.pow(MAX_GROWTH_PER_SEC, ageSec);
+  // Bei sehr altem Konto wird maxByAge zu Infinity → keine weitere Schranke.
+  if (Number.isFinite(maxByAge) && valuation > maxByAge) {
+    return 'Firmenwert wächst zu schnell für das Kontoalter';
+  }
+  return null;
+}
+
 app.post('/api/leaderboard', requireAuth, (req, res) => {
   const { name, valuation, prestige } = req.body ?? {};
-  if (typeof valuation !== 'number' || !Number.isFinite(valuation)) {
-    return res.status(400).json({ error: 'Ungültiger Firmenwert' });
-  }
-  queries.upsertLeaderboard(req.user.id, String(name ?? 'Unbenannt').slice(0, 40), valuation, Number(prestige) || 0);
+  const err = scoreError(req.user, valuation);
+  if (err) return res.status(400).json({ error: err });
+  const safePrestige = Math.min(1_000_000, Math.max(0, Math.floor(Number(prestige) || 0)));
+  queries.upsertLeaderboard(req.user.id, String(name ?? 'Unbenannt').slice(0, 40), valuation, safePrestige);
   res.json({ ok: true });
 });
 

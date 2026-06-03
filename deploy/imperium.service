@@ -1,0 +1,25 @@
+[Unit]
+Description=Unternehmens-Imperium Backend (Express + SQLite)
+After=network.target
+
+[Service]
+Type=simple
+User=imperium
+Group=imperium
+WorkingDirectory=/var/www/imperium/server
+# Node >= 22.5 wird für node:sqlite benötigt (siehe DEPLOY.md).
+ExecStart=/usr/bin/node server.js
+Environment=NODE_ENV=production
+Environment=PORT=3000
+# Nur lokal lauschen – von außen erreichbar ist die App ausschließlich über nginx.
+Environment=HOST=127.0.0.1
+Restart=on-failure
+RestartSec=5
+# Etwas Härtung
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/www/imperium/server
+
+[Install]
+WantedBy=multi-user.target

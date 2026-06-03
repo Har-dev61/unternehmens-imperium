@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="description" content="Unternehmens-Imperium — ein Idle-/Klicker-Game über den Aufbau eines Wirtschaftsimperiums.">
+  <title>🏢 Unternehmens-Imperium</title>
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏢</text></svg>">
+</head>
+<body data-theme="local">
+
+  <!-- ===== Topbar ===== -->
+  <header id="topbar">
+    <div class="brand">
+      <span class="brand-logo">🏢</span>
+      <input id="company-name" type="text" maxlength="28" aria-label="Firmenname" value="Mein Startup">
+    </div>
+    <div class="topstats">
+      <div class="topstat"><span class="ts-label">Firmenwert</span><span id="stat-valuation" class="ts-value">€0</span></div>
+      <div class="topstat"><span class="ts-label">💠 Einfluss</span><span id="stat-influence" class="ts-value">0</span></div>
+    </div>
+    <div class="topbtns">
+      <button id="btn-mute" title="Ton an/aus">🔊</button>
+      <button id="btn-save" title="Speichern">💾</button>
+      <button id="btn-settings" title="Einstellungen">⚙️</button>
+    </div>
+  </header>
+
+  <main id="app">
+    <!-- ===== Clicker / HQ panel ===== -->
+    <section id="clicker-panel">
+      <div id="world-banner">
+        <span id="world-banner-icon">🏠</span>
+        <div>
+          <div id="world-banner-name">Lokaler Markt</div>
+          <div id="world-banner-desc">Wo jedes Imperium beginnt.</div>
+        </div>
+      </div>
+
+      <div id="click-stage">
+        <div id="float-layer"></div>
+        <button id="click-button" aria-label="Arbeiten (klicken um Geld zu verdienen)">
+          <span id="click-icon">🏠</span>
+        </button>
+        <div id="click-value-wrap">+<span id="click-value">€1</span> pro Klick</div>
+        <div id="event-mult" class="event-mult" hidden></div>
+      </div>
+
+      <div id="boosts" class="boosts"></div>
+
+      <div class="quickstats">
+        <div class="qs"><span class="qs-label">💰 Kapital</span><span id="stat-money" class="qs-value">€0</span></div>
+        <div class="qs"><span class="qs-label">📈 pro Sekunde</span><span id="stat-mps" class="qs-value">€0/s</span></div>
+        <div class="qs"><span class="qs-label">👥 Mitarbeiter</span><span id="stat-employees" class="qs-value">0</span></div>
+        <div class="qs"><span class="qs-label">🏭 Gebäude</span><span id="stat-buildings" class="qs-value">0</span></div>
+      </div>
+
+      <div id="milestone" class="milestone">
+        <div id="milestone-label" class="milestone-label">Nächste Welt …</div>
+        <div class="milestone-bar"><div id="milestone-fill" class="milestone-fill"></div></div>
+      </div>
+    </section>
+
+    <!-- ===== Tabbed shop / management panel ===== -->
+    <section id="panel">
+      <nav id="nav">
+        <button data-tab="shop" class="active">🏬 Assets</button>
+        <button data-tab="upgrades">⬆️ Upgrades</button>
+        <button data-tab="worlds">🌍 Welten</button>
+        <button data-tab="quests">📋 Aufträge</button>
+        <button data-tab="prestige">📈 Prestige</button>
+        <button data-tab="achievements">🏆 Erfolge</button>
+        <button data-tab="online">🌐 Online</button>
+      </nav>
+
+      <div id="panel-content">
+        <section id="tab-shop" class="tab active">
+          <div class="shop-header">
+            <h2>Assets kaufen</h2>
+            <div id="buy-qty" class="buy-qty">
+              <span>Menge:</span>
+              <button data-qty="1" class="active">×1</button>
+              <button data-qty="10">×10</button>
+              <button data-qty="100">×100</button>
+              <button data-qty="max">Max</button>
+            </div>
+          </div>
+          <div id="shop-list" class="shop-list"></div>
+        </section>
+
+        <section id="tab-upgrades" class="tab">
+          <h2>Upgrades</h2>
+          <div id="upgrades-list"></div>
+        </section>
+
+        <section id="tab-worlds" class="tab">
+          <h2>Welten &amp; Märkte</h2>
+          <div id="worlds-list" class="worlds-list"></div>
+        </section>
+
+        <section id="tab-quests" class="tab">
+          <h2>Aufträge &amp; Missionen</h2>
+          <div id="quests-list" class="quests-list"></div>
+        </section>
+
+        <section id="tab-prestige" class="tab">
+          <div id="prestige-content"></div>
+        </section>
+
+        <section id="tab-achievements" class="tab">
+          <h2>Erfolge <span id="ach-progress" class="pill">0/0</span></h2>
+          <div id="achievements-list" class="achievements-list"></div>
+        </section>
+
+        <section id="tab-online" class="tab">
+          <h2>Online &amp; Bestenliste</h2>
+          <div id="online-content"></div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <!-- ===== Modal & toasts ===== -->
+  <div id="modal-layer" hidden>
+    <div class="modal"><div id="modal-content"></div></div>
+  </div>
+  <div id="toasts" class="toast-container"></div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

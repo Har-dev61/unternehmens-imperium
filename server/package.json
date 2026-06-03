@@ -1,0 +1,13 @@
+{
+  "name": "imperium-server",
+  "version": "1.0.0",
+  "description": "Backend (Express + node:sqlite) für Unternehmens-Imperium: Konten, Cloud-Saves, Bestenliste, Events.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.22.2"
+  }
+}

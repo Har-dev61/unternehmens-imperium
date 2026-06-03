@@ -1,0 +1,95 @@
+import type { EventBus } from './EventBus.js';
+import type { ActiveEvent } from '../types.js';
+
+interface EventInput {
+  id: string;
+  name: string;
+  multiplier: number;
+  duration: number;
+  source?: string;
+  startedAt?: number;
+}
+
+interface EventManagerData {
+  active: ActiveEvent[];
+  secondsUntilNextLocal: number;
+}
+
+const LOCAL_EVENTS: Omit<EventInput, 'source' | 'startedAt'>[] = [
+  { id: 'rush', name: '⚡ Auftragsboom', multiplier: 2, duration: 45 },
+  { id: 'press', name: '📰 Positive Presse', multiplier: 1.5, duration: 90 },
+  { id: 'investor', name: '💼 Investoren-Hype', multiplier: 3, duration: 30 },
+  { id: 'season', name: '🎁 Saison-Hochbetrieb', multiplier: 2.5, duration: 60 },
+];
+
+/**
+ * Manages temporary economic boosts. Local random events fire every few
+ * minutes (offline-friendly); online events are ingested via the OnlineManager.
+ */
+export class EventManager {
+  bus: EventBus;
+  active: ActiveEvent[] = [];
+  secondsUntilNextLocal: number;
+
+  constructor(bus: EventBus) {
+    this.bus = bus;
+    this.secondsUntilNextLocal = this.randomInterval();
+  }
+
+  update(dt: number): void {
+    const now = Date.now();
+    const before = this.active.length;
+    this.active = this.active.filter((e) => {
+      const alive = e.expiresAt > now;
+      if (!alive) this.bus.emit('event:ended', e);
+      return alive;
+    });
+    if (this.active.length !== before) this.bus.emit('events:changed', this.active);
+
+    this.secondsUntilNextLocal -= dt;
+    if (this.secondsUntilNextLocal <= 0) {
+      const def = LOCAL_EVENTS[Math.floor(Math.random() * LOCAL_EVENTS.length)]!;
+      this.addEvent({ ...def, source: 'local' });
+      this.secondsUntilNextLocal = this.randomInterval();
+    }
+  }
+
+  addEvent({ id, name, multiplier, duration, source = 'local', startedAt }: EventInput): ActiveEvent {
+    const start = startedAt ?? Date.now();
+    const event: ActiveEvent = {
+      id: id + '-' + start,
+      name,
+      multiplier,
+      source,
+      expiresAt: start + duration * 1000,
+    };
+    this.active.push(event);
+    this.bus.emit('event:started', event);
+    this.bus.emit('events:changed', this.active);
+    return event;
+  }
+
+  ingestServerEvents(events: EventInput[]): void {
+    for (const e of events) this.addEvent(e);
+  }
+
+  /** Product of all active event multipliers. */
+  getMultiplier(): number {
+    return this.active.reduce((m, e) => m * e.multiplier, 1);
+  }
+
+  private randomInterval(): number {
+    return 180 + Math.random() * 180; // 3–6 minutes
+  }
+
+  toJSON(): EventManagerData {
+    return { active: this.active, secondsUntilNextLocal: this.secondsUntilNextLocal };
+  }
+
+  loadJSON(data?: Partial<EventManagerData> | null): void {
+    if (!data) return;
+    const now = Date.now();
+    this.active = (data.active ?? []).filter((e) => e.expiresAt > now);
+    this.secondsUntilNextLocal = data.secondsUntilNextLocal ?? this.randomInterval();
+  }
+}

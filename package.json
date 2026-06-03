@@ -1,0 +1,25 @@
+{
+  "name": "unternehmens-imperium",
+  "version": "1.0.0",
+  "description": "Browserbasiertes Idle-/Klicker-Game über den Aufbau eines Wirtschaftsimperiums.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "start": "npx --yes serve -l 5173 .",
+    "serve:python": "python -m http.server 5173",
+    "test": "tsc && node test/smoke.mjs"
+  },
+  "keywords": [
+    "idle-game",
+    "clicker",
+    "incremental",
+    "javascript",
+    "oop"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+server/node_modules/
+
+# Backend database (created at runtime by node:sqlite)
+server/*.db
+server/*.db-wal
+server/*.db-shm
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Editor / OS
+.DS_Store
+*.log
+
+# NOTE: js/ is the tsc build output but is intentionally committed so the game
+# runs without a build step. Run `npm run build` after editing src/.

@@ -1,0 +1,64 @@
+/**
+ * Achievement catalogue. Each unlocked achievement grants a small permanent
+ * multiplicative income bonus (`bonus`). Conditions are predicates over `game`.
+ */
+import type { Game } from '../core/Game.js';
+import type { AchievementConfig } from '../types.js';
+
+export const ACHIEVEMENT_DEFS: AchievementConfig[] = [
+  // Clicking
+  { id: 'ach-click-1', name: 'Erster Klick', icon: '👆', bonus: 1.01,
+    description: 'Klicke zum ersten Mal.', condition: (g: Game) => g.player.totalClicks >= 1 },
+  { id: 'ach-click-2', name: 'Klick-Enthusiast', icon: '🖱️', bonus: 1.02,
+    description: 'Klicke 500-mal.', condition: (g: Game) => g.player.totalClicks >= 500 },
+  { id: 'ach-click-3', name: 'Sehnenscheiden-Held', icon: '💪', bonus: 1.03,
+    description: 'Klicke 5.000-mal.', condition: (g: Game) => g.player.totalClicks >= 5_000 },
+
+  // Earnings
+  { id: 'ach-money-1', name: 'Erste Million', icon: '💵', bonus: 1.02,
+    description: 'Verdiene insgesamt €1 Mio.', condition: (g: Game) => g.player.lifetimeEarned >= 1e6 },
+  { id: 'ach-money-2', name: 'Milliardär', icon: '💰', bonus: 1.03,
+    description: 'Verdiene insgesamt €1 Mrd.', condition: (g: Game) => g.player.lifetimeEarned >= 1e9 },
+  { id: 'ach-money-3', name: 'Billionen-Club', icon: '🏦', bonus: 1.05,
+    description: 'Verdiene insgesamt €1 Bio.', condition: (g: Game) => g.player.lifetimeEarned >= 1e12 },
+  { id: 'ach-money-4', name: 'Astronomisch reich', icon: '🌠', bonus: 1.07,
+    description: 'Verdiene insgesamt €1 Trill.', condition: (g: Game) => g.player.lifetimeEarned >= 1e18 },
+
+  // Head-count / assets
+  { id: 'ach-emp-1', name: 'Team-Player', icon: '👥', bonus: 1.02,
+    description: 'Beschäftige 50 Mitarbeiter.', condition: (g: Game) => g.getEmployeeCount() >= 50 },
+  { id: 'ach-emp-2', name: 'Großarbeitgeber', icon: '🏢', bonus: 1.04,
+    description: 'Beschäftige 500 Mitarbeiter.', condition: (g: Game) => g.getEmployeeCount() >= 500 },
+  { id: 'ach-build-1', name: 'Bauherr', icon: '🏗️', bonus: 1.03,
+    description: 'Besitze 100 Gebäude.', condition: (g: Game) => g.getBuildingCount() >= 100 },
+  { id: 'ach-asset-1', name: 'Tausendsassa', icon: '📊', bonus: 1.05,
+    description: 'Besitze 1.000 Assets insgesamt.', condition: (g: Game) => g.getTotalAssetCount() >= 1_000 },
+
+  // Worlds
+  { id: 'ach-world-2', name: 'Über die Grenze', icon: '🏙️', bonus: 1.03,
+    description: 'Erschließe die Nationale Wirtschaft.', condition: (g: Game) => !!g.getWorld('national')?.unlocked },
+  { id: 'ach-world-3', name: 'Global Player', icon: '🌍', bonus: 1.04,
+    description: 'Erschließe den Globalen Markt.', condition: (g: Game) => !!g.getWorld('global')?.unlocked },
+  { id: 'ach-world-tech', name: 'Disruptor', icon: '💻', bonus: 1.05,
+    description: 'Erschließe die Tech-Welt.', condition: (g: Game) => !!g.getWorld('tech')?.unlocked },
+  { id: 'ach-world-space', name: 'Interplanetar', icon: '🚀', bonus: 1.07,
+    description: 'Erschließe die Weltraumkolonien.', condition: (g: Game) => !!g.getWorld('space')?.unlocked },
+  { id: 'ach-world-all', name: 'Herr aller Welten', icon: '🌌', bonus: 1.15,
+    description: 'Erschließe alle Welten.', condition: (g: Game) => g.getUnlockedWorldCount() >= g.worlds.length },
+
+  // Upgrades & prestige
+  { id: 'ach-up-1', name: 'Aufrüster', icon: '⬆️', bonus: 1.02,
+    description: 'Kaufe 25 Upgrades.', condition: (g: Game) => g.getPurchasedUpgradeCount() >= 25 },
+  { id: 'ach-rare-1', name: 'Geheimwaffe', icon: '✨', bonus: 1.05,
+    description: 'Kaufe ein seltenes Spezial-Upgrade.', condition: (g: Game) => g.upgrades.some((u) => u.rare && u.purchased) },
+  { id: 'ach-prestige-1', name: 'Börsengang', icon: '📈', bonus: 1.05,
+    description: 'Geh zum ersten Mal an die Börse (Prestige).', condition: (g: Game) => g.player.prestigeLevel >= 1 },
+  { id: 'ach-prestige-2', name: 'Seriengründer', icon: '🔁', bonus: 1.10,
+    description: 'Geh 5-mal an die Börse.', condition: (g: Game) => g.player.prestigeLevel >= 5 },
+
+  // Events & quests
+  { id: 'ach-golden-1', name: 'Goldgräber', icon: '💎', bonus: 1.05,
+    description: 'Sammle deinen ersten Goldenen Deal ein.', condition: (g: Game) => g.player.goldenClicks >= 1 },
+  { id: 'ach-quest-1', name: 'Auftragnehmer', icon: '📋', bonus: 1.05,
+    description: 'Schließe 5 Aufträge ab.', condition: (g: Game) => g.quests.filter((q) => q.claimed).length >= 5 },
+];

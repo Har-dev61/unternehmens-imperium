@@ -105,9 +105,6 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_users_token ON users(token);
   CREATE INDEX IF NOT EXISTS idx_lb_valuation ON leaderboard(valuation DESC);
-  /* Partial unique index: at most one account per e-mail, but many NULLs
-     (guests + legacy accounts) are allowed. */
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;
 `);
 
 // Idempotent migrations for databases created before these columns existed.
@@ -121,6 +118,15 @@ for (const col of [
   'token_expires INTEGER NOT NULL DEFAULT 0',
 ]) {
   try { db.exec(`ALTER TABLE users ADD COLUMN ${col}`); } catch { /* column already present — ok */ }
+}
+
+// Only NOW (after the email column is guaranteed to exist — freshly created above
+// OR just added by the migration on a legacy DB) create its partial unique index.
+// At most one account per e-mail, but many NULLs (guests + legacy accounts) allowed.
+try {
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL');
+} catch (e) {
+  console.error('[db] could not create idx_users_email:', e.message);
 }
 
 // --- Prepared statements ---------------------------------------------------

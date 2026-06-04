@@ -69,6 +69,7 @@ export class UIManager {
     this.floatLayer = this.$('float-layer');
 
     this.bindStatic();
+    this.preventMobileZoom();
     this.buildShop();
     this.rebuildUpgrades();
     this.buildWorlds();
@@ -85,7 +86,18 @@ export class UIManager {
   }
 
   bindStatic(): void {
-    this.clickButton.addEventListener('click', (e) => this.handleClick(e as MouseEvent));
+    // Instant, spam-proof clicking. `pointerdown` fires the moment a finger (or
+    // mouse) touches down — no 300 ms tap delay, and one event per simultaneous
+    // finger, so multi-touch spamming all counts. preventDefault stops the touch
+    // from being interpreted as a scroll/zoom/selection gesture.
+    this.clickButton.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      this.handleClick(e.clientX, e.clientY);
+    });
+    // Keyboard activation (Enter/Space) fires a synthetic click with detail 0;
+    // pointer-driven clicks (detail ≥ 1) are already handled above, so ignore them.
+    this.clickButton.addEventListener('click', (e) => { if (e.detail === 0) this.handleClick(); });
+    this.clickButton.addEventListener('contextmenu', (e) => e.preventDefault());
 
     document.querySelectorAll<HTMLElement>('#nav [data-tab]').forEach((btn) => {
       btn.addEventListener('click', () => this.switchTab(btn.dataset.tab ?? 'shop'));
@@ -116,6 +128,24 @@ export class UIManager {
       if ((e.target as HTMLElement).id === 'modal-layer') this.closeModal();
     });
     this.updateMuteButton();
+  }
+
+  /**
+   * Stop the browser from turning fast taps into zoom gestures. `touch-action`
+   * (in CSS) already kills double-tap zoom; this blocks pinch-zoom too, which
+   * iOS Safari still allows because it ignores `user-scalable=no`.
+   */
+  preventMobileZoom(): void {
+    const block = (e: Event): void => e.preventDefault();
+    // iOS-only pinch gesture events.
+    document.addEventListener('gesturestart', block, { passive: false });
+    document.addEventListener('gesturechange', block, { passive: false });
+    document.addEventListener('gestureend', block, { passive: false });
+    // Any 2+ finger move is a pinch attempt — block it everywhere (single-finger
+    // scrolling is untouched, so lists still scroll normally).
+    document.addEventListener('touchmove', (e: TouchEvent) => {
+      if (e.touches.length > 1) e.preventDefault();
+    }, { passive: false });
   }
 
   subscribe(): void {
@@ -263,17 +293,22 @@ export class UIManager {
   }
 
   // === Clicking ===========================================================
-  handleClick(e: MouseEvent): void {
+  handleClick(clientX?: number, clientY?: number): void {
     const value = this.game.click();
     this.clickButton.classList.remove('pop');
     void this.clickButton.offsetWidth; // restart animation
     this.clickButton.classList.add('pop');
     const rect = this.floatLayer.getBoundingClientRect();
-    this.spawnFloat(e.clientX - rect.left, e.clientY - rect.top, '+' + formatMoney(value));
+    // Fall back to the button centre when there are no pointer coords (keyboard).
+    const x = (clientX ?? rect.left + rect.width / 2) - rect.left;
+    const y = (clientY ?? rect.top + rect.height / 2) - rect.top;
+    this.spawnFloat(x, y, '+' + formatMoney(value));
     this.playSound(440, 0.05);
   }
 
   spawnFloat(x: number, y: number, text: string): void {
+    // Cap concurrent float numbers so heavy spam-tapping never piles up DOM nodes.
+    if (this.floatLayer.childElementCount > 24) this.floatLayer.firstElementChild?.remove();
     const span = document.createElement('span');
     span.className = 'float-num';
     span.textContent = text;
@@ -538,7 +573,8 @@ export class UIManager {
     el.title = 'Goldener Deal — schnell anklicken!';
     el.style.left = (10 + Math.random() * 70) + '%';
     el.style.top = (15 + Math.random() * 60) + '%';
-    el.addEventListener('click', () => {
+    el.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
       const result = this.game.clickGolden(deal.id);
       this.removeGolden();
       if (result) {

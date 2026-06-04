@@ -7,7 +7,9 @@
  * Hinweis: Service Worker laufen nur in sicherem Kontext (https oder localhost).
  * Über http://<IP> wird der SW vom Browser ignoriert — das Spiel läuft trotzdem.
  */
-const CACHE = 'imperium-v1';
+// Bump this version on every release so returning PWA users get fresh assets
+// (the activate handler purges all caches whose key !== CACHE).
+const CACHE = 'imperium-v2';
 const SHELL = [
   './',
   'index.html',

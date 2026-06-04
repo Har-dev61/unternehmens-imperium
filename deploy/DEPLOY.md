@@ -12,6 +12,11 @@ Browser ──▶ nginx :80/:443 ──┬─▶ statische Dateien (/var/www/imp
 > Der Client wählt seine Backend-URL automatisch: lokal `http://localhost:3000`,
 > sonst `location.origin` (= dieselbe Domain). Du musst im Code nichts ändern.
 
+> **WebSockets (Echtzeit-Push):** Der Endpunkt `/api/ws` läuft über dieselbe
+> `/api/`-Weiterleitung; die mitgelieferte nginx-Konfig reicht den `Upgrade`-Header
+> durch (`map $http_upgrade $connection_upgrade`). Das Backend braucht dafür das
+> `ws`-Paket — `npm ci --omit=dev` im `server/`-Ordner installiert es mit.
+
 ---
 
 ## 1. Node.js 24 installieren

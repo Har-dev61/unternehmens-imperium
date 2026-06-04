@@ -176,6 +176,23 @@ export class UIManager {
             if (tok)
                 this.notify.show({ title: '🔑 Dev-Token (E-Mail noch inaktiv)', text: tok, icon: '🔑', kind: 'info', duration: 10000 });
         });
+        // Realtime push (Phase 4): live lobby updates + "logged in elsewhere" notice.
+        this.bus.on('realtime', (m) => {
+            if (m.type === 'lobby:changed') {
+                if (this.activeTab === 'trade' && this.tradeLobbyId && m.id === this.tradeLobbyId)
+                    void this.pollTrade();
+            }
+            else if (m.type === 'session:elsewhere') {
+                this.notify.show({ title: 'Andere Sitzung aktiv', text: 'Dein Konto ist woanders eingeloggt.', icon: '👥', kind: 'info', duration: 7000 });
+            }
+        });
+        this.bus.on('online:live', () => {
+            // On (re)connect, reconcile the open lobby so nothing was missed offline.
+            if (this.activeTab === 'trade' && this.tradeLobbyId)
+                void this.pollTrade();
+            if (this.activeTab === 'online')
+                this.buildOnline(); // refresh the ⚡ Live indicator
+        });
         this.bus.on('golden:spawn', (deal) => this.spawnGolden(deal));
         this.bus.on('golden:expire', () => this.removeGolden());
         this.bus.on('quest:complete', ({ quest }) => {
@@ -221,7 +238,9 @@ export class UIManager {
             }
             if (this.activeTab === 'trade') {
                 this.tradePollAccum += 0.4;
-                const interval = this.tradeLobbyId ? 1.6 : 6; // poll the room fast, the list slowly
+                // Live push handles instant updates; polling is just a fallback/reconcile
+                // (slow when the socket is live, faster when it isn't).
+                const interval = this.tradeLobbyId ? (this.game.onlineManager.isLive ? 8 : 2) : 8;
                 if (this.tradePollAccum >= interval) {
                     this.tradePollAccum = 0;
                     void this.pollTrade();
@@ -758,7 +777,7 @@ export class UIManager {
         const s = om.session;
         const status = s.mode === 'offline' ? 'Nicht angemeldet' :
             `${s.mode === 'guest' ? 'Gast' : 'Konto'}: ${escapeHtml(s.username ?? '')}`;
-        const transport = om.usingServer ? '🟢 Mit Server verbunden'
+        const transport = om.usingServer ? ('🟢 Mit Server verbunden' + (om.isLive ? ' · ⚡ Live (WebSocket)' : ''))
             : om.serverReachable === false ? '🟡 Server offline – Simulation'
                 : om.hasServer() ? '⚪ Server konfiguriert' : '⚪ Nur Simulation';
         const account = s.mode === 'account';

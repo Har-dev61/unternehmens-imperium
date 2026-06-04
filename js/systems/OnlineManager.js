@@ -16,6 +16,11 @@ export class OnlineManager {
     usingServer = false;
     /** null = untried, true/false after the first request. */
     serverReachable = null;
+    // --- Realtime (Phase 4): server→client push over a WebSocket ---
+    ws = null;
+    wsWantOpen = false;
+    wsAttempts = 0;
+    wsTimer = null;
     constructor(bus, opts = {}) {
         if (typeof opts === 'string')
             opts = { storageKey: opts }; // back-compat
@@ -159,6 +164,7 @@ export class OnlineManager {
         return (await this.api('/api/lobbies/history', { auth: true })).history ?? [];
     }
     logout() {
+        this.disconnectSocket();
         this.token = null;
         localStorage.removeItem(this.storageKey + '-token');
         this.usingServer = false;
@@ -222,6 +228,64 @@ export class OnlineManager {
         }
         return this.simEvents();
     }
+    // === Realtime push (Phase 4) ============================================
+    /** True while the push socket is connected. */
+    get isLive() { return !!this.ws && this.ws.readyState === WebSocket.OPEN; }
+    /** Open the server→client push socket (idempotent); auto-reconnects with backoff. */
+    connectSocket() {
+        if (!this.usingServer || !this.token || !this.serverUrl)
+            return;
+        this.wsWantOpen = true;
+        if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING))
+            return;
+        const url = this.serverUrl.replace(/^http/, 'ws') + '/api/ws?token=' + encodeURIComponent(this.token);
+        let ws;
+        try {
+            ws = new WebSocket(url);
+        }
+        catch {
+            this.scheduleReconnect();
+            return;
+        }
+        this.ws = ws;
+        ws.onopen = () => { this.wsAttempts = 0; this.bus.emit('online:live', { open: true }); };
+        ws.onmessage = (e) => { try {
+            this.bus.emit('realtime', JSON.parse(String(e.data)));
+        }
+        catch { /* ignore */ } };
+        ws.onerror = () => { try {
+            ws.close();
+        }
+        catch { /* ignore */ } };
+        ws.onclose = () => {
+            if (this.ws === ws)
+                this.ws = null;
+            this.bus.emit('online:live', { open: false });
+            if (this.wsWantOpen)
+                this.scheduleReconnect();
+        };
+    }
+    scheduleReconnect() {
+        if (!this.wsWantOpen || this.wsTimer)
+            return;
+        const delay = Math.min(30_000, 1000 * 2 ** Math.min(this.wsAttempts++, 5)); // 1s → … → 30s
+        this.wsTimer = setTimeout(() => { this.wsTimer = null; this.connectSocket(); }, delay);
+    }
+    /** Close the push socket and stop reconnecting (on logout / expiry). */
+    disconnectSocket() {
+        this.wsWantOpen = false;
+        if (this.wsTimer) {
+            clearTimeout(this.wsTimer);
+            this.wsTimer = null;
+        }
+        if (this.ws) {
+            try {
+                this.ws.close();
+            }
+            catch { /* ignore */ }
+            this.ws = null;
+        }
+    }
     // === Real HTTP transport ===============================================
     async api(path, { method = 'GET', body = null, auth = false } = {}) {
         const headers = { 'Content-Type': 'application/json' };
@@ -246,6 +310,7 @@ export class OnlineManager {
         return res.json();
     }
     handleExpiredToken() {
+        this.disconnectSocket();
         this.token = null;
         localStorage.removeItem(this.storageKey + '-token');
         this.usingServer = false;
@@ -263,6 +328,7 @@ export class OnlineManager {
         this.usingServer = true;
         this.serverReachable = true;
         this.bus.emit('online:session', this.session);
+        this.connectSocket(); // open the realtime push channel once authenticated
         // No real e-mail delivery yet → surface dev tokens so the flow stays testable.
         if (r.devVerifyToken || r.devResetToken) {
             this.bus.emit('online:devtoken', { verify: r.devVerifyToken, reset: r.devResetToken });

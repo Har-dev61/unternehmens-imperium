@@ -25,6 +25,7 @@ import { queries, tx, seedRivalsIfEmpty } from './db.js';
 import { sendVerification, sendPasswordReset, DEV_RETURN_TOKENS } from './mailer.js';
 import * as resources from './resources.js';
 import * as trade from './trade.js';
+import * as realtime from './realtime.js';
 
 const PORT = process.env.PORT ?? 3000;
 // In production bind to 127.0.0.1 so the backend is only reachable through the
@@ -371,24 +372,28 @@ app.get('/api/lobbies/:id', requireAuth, (req, res) => {
 app.post('/api/lobbies/:id/join', requireAuth, (req, res) => {
   const r = tx(() => trade.joinLobby(req.user.id, req.params.id));
   if (r.error) return res.status(400).json({ error: r.error });
+  realtime.pushLobby(req.params.id); // notify the creator their lobby filled
   res.json(r);
 });
 
 app.post('/api/lobbies/:id/offer', requireAuth, (req, res) => {
   const r = tx(() => trade.setOffer(req.user.id, req.params.id, req.body?.offer ?? {}));
   if (r.error) return res.status(400).json({ error: r.error });
+  realtime.pushLobby(req.params.id); // push the new offer to the other side
   res.json(tx(() => trade.getLobbyState(req.user.id, req.params.id)));
 });
 
 app.post('/api/lobbies/:id/confirm', requireAuth, (req, res) => {
   const r = tx(() => trade.confirm(req.user.id, req.params.id, !!req.body?.confirmed));
   if (r.error) return res.status(400).json({ error: r.error });
+  realtime.pushLobby(req.params.id); // push confirmation / completion to both
   res.json(tx(() => trade.getLobbyState(req.user.id, req.params.id)));
 });
 
 app.post('/api/lobbies/:id/leave', requireAuth, (req, res) => {
   const r = tx(() => trade.leaveLobby(req.user.id, req.params.id));
   if (r.error) return res.status(400).json({ error: r.error });
+  realtime.pushLobby(req.params.id); // tell the other side it was cancelled (escrow refunded)
   res.json(r);
 });
 
@@ -399,6 +404,8 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 seedRivalsIfEmpty();
 // Periodically cancel idle trade lobbies and refund their escrow.
 setInterval(() => { try { trade.sweepExpired(); } catch (e) { console.warn('[trade] sweep failed:', e.message); } }, 60_000);
-app.listen(PORT, HOST, () => {
+const server = app.listen(PORT, HOST, () => {
   console.log(`🏢 Imperium-Backend läuft auf http://${HOST}:${PORT}`);
 });
+// Attach the WebSocket push layer (shares the port; path /api/ws).
+realtime.attach(server);

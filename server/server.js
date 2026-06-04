@@ -26,6 +26,7 @@ import { sendVerification, sendPasswordReset, DEV_RETURN_TOKENS } from './mailer
 import * as resources from './resources.js';
 import * as trade from './trade.js';
 import * as realtime from './realtime.js';
+import * as economy from './economy.js';
 
 const PORT = process.env.PORT ?? 3000;
 // In production bind to 127.0.0.1 so the backend is only reachable through the
@@ -360,6 +361,19 @@ app.post('/api/resources/build', requireAuth, (req, res) => {
   if (result.error) return res.status(400).json({ error: result.error });
   res.json(result);
 });
+
+// --- Server-authoritative economy (Part 2a) --------------------------------
+// The server runs the canonical Game per player; clients send actions only.
+app.get('/api/economy', requireAuth, (req, res) => res.json(tx(() => economy.snapshot(req.user.id))));
+app.post('/api/economy/click', requireAuth, (req, res) => res.json(tx(() => economy.applyClicks(req.user.id, Number(req.body?.count) || 0))));
+app.post('/api/economy/buy-asset', requireAuth, (req, res) => res.json(tx(() => economy.buyAsset(req.user.id, String(req.body?.assetId ?? ''), req.body?.quantity ?? 1))));
+app.post('/api/economy/buy-upgrade', requireAuth, (req, res) => res.json(tx(() => economy.buyUpgrade(req.user.id, String(req.body?.id ?? '')))));
+app.post('/api/economy/research', requireAuth, (req, res) => res.json(tx(() => economy.buyResearch(req.user.id, String(req.body?.id ?? '')))));
+app.post('/api/economy/prestige-upgrade', requireAuth, (req, res) => res.json(tx(() => economy.buyPrestigeUpgrade(req.user.id, String(req.body?.id ?? '')))));
+app.post('/api/economy/prestige', requireAuth, (req, res) => res.json(tx(() => economy.prestige(req.user.id))));
+app.post('/api/economy/world', requireAuth, (req, res) => res.json(tx(() => economy.setActiveWorld(req.user.id, String(req.body?.id ?? '')))));
+app.post('/api/economy/daily', requireAuth, (req, res) => res.json(tx(() => economy.claimDaily(req.user.id))));
+app.post('/api/economy/quest', requireAuth, (req, res) => res.json(tx(() => economy.claimQuest(req.user.id, String(req.body?.id ?? '')))));
 
 // --- Trading lobbies (Phase 3) ---------------------------------------------
 // NB: /history is registered before /:id so it isn't captured as an id.

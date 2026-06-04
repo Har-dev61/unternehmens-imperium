@@ -82,6 +82,13 @@ db.exec(`
   /* Small key/value table for one-off migrations/markers. */
   CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 
+  /* Server-authoritative economy: the serialized Game SaveState per player. */
+  CREATE TABLE IF NOT EXISTS player_economy (
+    user_id   INTEGER PRIMARY KEY REFERENCES users(id),
+    data      TEXT NOT NULL,
+    last_tick INTEGER NOT NULL
+  );
+
   /* --- Trading: lobbies + escrowed offers + history (Phase 3) --- */
   CREATE TABLE IF NOT EXISTS lobbies (
     id         TEXT PRIMARY KEY,
@@ -201,6 +208,11 @@ const stmts = {
   ),
   metaGet: db.prepare('SELECT value FROM meta WHERE key = ?'),
   metaSet: db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'),
+  econGet: db.prepare('SELECT data, last_tick FROM player_economy WHERE user_id = ?'),
+  econSet: db.prepare(
+    `INSERT INTO player_economy (user_id, data, last_tick) VALUES (?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET data = excluded.data, last_tick = excluded.last_tick`
+  ),
   // --- Trading (Phase 3) ---
   createLobby: db.prepare('INSERT INTO lobbies (id, creator_id, status, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'),
   getLobby: db.prepare('SELECT * FROM lobbies WHERE id = ?'),
@@ -277,6 +289,8 @@ export const queries = {
   setEnergy: (userId, world, energy, lastTick) => stmts.energySet.run(userId, world, energy, lastTick),
   getMeta: (key) => stmts.metaGet.get(key)?.value ?? null,
   setMeta: (key, value) => stmts.metaSet.run(key, String(value)),
+  getEconomy: (userId) => stmts.econGet.get(userId),
+  setEconomy: (userId, data, lastTick) => stmts.econSet.run(userId, data, lastTick),
   // --- Trading (Phase 3) ---
   createLobby: (id, creatorId, title) => stmts.createLobby.run(id, creatorId, 'open', title ?? null, Date.now(), Date.now()),
   getLobby: (id) => stmts.getLobby.get(id),

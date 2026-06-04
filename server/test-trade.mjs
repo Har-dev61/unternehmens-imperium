@@ -26,6 +26,7 @@ const { queries, tx } = dbMod;
 const db = dbMod.default;
 const resources = await import('./resources.js');
 const trade = await import('./trade.js');
+const economy = await import('./economy.js');
 
 const base = `http://127.0.0.1:${PORT}`;
 let pass = 0, fail = 0;
@@ -100,6 +101,34 @@ try {
   const lb = tx(() => trade.createLobby(frank)).id;
   ok(tx(() => trade.setOffer(frank, la, { local_common: 100 }, T)).ok, 'frank escrows all 100 local_common in lobby A');
   ok(tx(() => trade.setOffer(frank, lb, { local_common: 50 }, T)).error, 'cannot offer the same local_common again in lobby B');
+
+  // --- Money in trades (Part 2c): server-authoritative € + resources combo ---
+  const mona = mkUser('t_mona'), nick = mkUser('t_nick');
+  economy.addMoney(mona, 5000, T);                 // server-authoritative balance
+  seed(mona, { local_common: 50 });
+  seed(nick, { national_common: 10 });
+  const ml = tx(() => trade.createLobby(mona, 'Geld+Holz')).id;
+  tx(() => trade.joinLobby(nick, ml));
+  // Mona offers 1000 € + 10 local_common; the money leaves her balance into escrow.
+  ok(tx(() => trade.setOffer(mona, ml, { resources: { local_common: 10 }, money: 1000 }, T)).ok, 'offer with money + resources accepted');
+  ok(Math.abs(economy.peekMoney(mona) - 4000) < 1, 'offered money moved into escrow (5000 → 4000)');
+  ok(tx(() => trade.setOffer(mona, ml, { money: 999999999 }, T)).error === 'Nicht genug Geld.', 'cannot offer more money than owned');
+  tx(() => trade.setOffer(nick, ml, { resources: { national_common: 5 } }, T));
+  tx(() => trade.confirm(mona, ml, true, T));
+  ok(tx(() => trade.confirm(nick, ml, true, T)).completed, 'money+resource trade executes');
+  ok(Math.abs(economy.getMoney(nick, T) - 1000) < 1, 'nick received the 1000 €');
+  ok(Math.abs(economy.getMoney(mona, T) - 4000) < 1, 'mona keeps her remaining 4000 € (1000 went to nick)');
+  ok(near(wallet(nick).local_common, 10), 'nick received the 10 local_common');
+  ok(near(wallet(mona).national_common, 5), 'mona received the 5 national_common');
+
+  // Leaving refunds escrowed money too.
+  const owen = mkUser('t_owen');
+  economy.addMoney(owen, 800, T);
+  const ol = tx(() => trade.createLobby(owen)).id;
+  tx(() => trade.setOffer(owen, ol, { money: 500 }, T));
+  ok(Math.abs(economy.peekMoney(owen) - 300) < 1, 'owen escrowed 500 € (800 → 300)');
+  tx(() => trade.leaveLobby(owen, ol, T));
+  ok(Math.abs(economy.getMoney(owen, T) - 800) < 1, 'leaving refunded the escrowed money (back to 800)');
 
   // --- Access control ---
   ok(tx(() => trade.getLobbyState(mkUser('t_outsider'), lid, T)).error, 'non-participant cannot view a lobby');

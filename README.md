@@ -152,7 +152,7 @@ click/
 
 ## ⚙️ Kernmechaniken
 
-**Kostenkurve (pro Asset):** `Kosten(n) = baseCost · 1,15ⁿ`. Massenkäufe nutzen die
+**Kostenkurve (pro Asset):** `Kosten(n) = baseCost · 1,20ⁿ`. Massenkäufe nutzen die
 geschlossene Form der geometrischen Reihe (`Asset.getCost`, `Asset.getMaxAffordable`).
 
 **Einnahmen-Mathematik** (zentral in `Game.recalculate()` + `computeDerived()`):
@@ -169,7 +169,7 @@ berechnet** (`recalculate`), indem die deklarativen Effekte aller gekauften
 Upgrades + Prestige-Upgrades angewandt und Achievement-/Prestige-Boni
 aufgeschlagen werden. Das hält den Zustand konsistent und frei von Drift.
 
-**Prestige (Börsengang):** Gewinn = `⌊∛(runEarned / 1e9)⌋` Einfluss-Punkte; jeder
+**Prestige (Börsengang):** Gewinn = `⌊∛(runEarned / 1e12)⌋` Einfluss-Punkte; jeder
 Punkt gibt dauerhaft **+2 %** auf alle Einnahmen. Zurückgesetzt werden Kapital,
 Assets und normale Upgrades — erhalten bleiben Welten, Erfolge, Einfluss und der
 Prestige-Upgrade-Baum.
@@ -178,6 +178,13 @@ Prestige-Upgrade-Baum.
 skaliert mit **einem** Faktor je Welt (auf Kosten *und* Produktion). Dadurch ist
 die Amortisationszeit in jeder Welt gleich (Balance), während die absoluten Zahlen
 über 10¹⁸-fach wachsen.
+
+**Balancing-Stellschrauben** (zentral, für langfristige Progression getunt):
+`PROD_SCALE` (Einkommens-Drossel, [`src/data/worlds.ts`](src/data/worlds.ts)),
+`Asset.costMultiplier` (Steilheit der Kostenkurve), `RESEARCH_RATE`
+([`src/core/Game.ts`](src/core/Game.ts)) und die `unlockAt`-Schwellen der Welten.
+Zum Nachmessen der Pacing dient [`test/balance-sim.mjs`](test/balance-sim.mjs)
+(`node test/balance-sim.mjs [Klicks/s]`).
 
 ---
 

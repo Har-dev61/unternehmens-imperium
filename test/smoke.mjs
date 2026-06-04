@@ -49,7 +49,8 @@ const prakt = game.getAsset('local-0');
 ok(prakt.getCost(1) === 15, `praktikant base cost 15 (got ${prakt.getCost(1)})`);
 ok(game.buyAsset('local-0', 1), 'buy 1 praktikant');
 ok(prakt.count === 1, 'count is 1');
-ok(Math.abs(game.getPerSecond() - 0.1) < 1e-9, `€/s is 0.1 (got ${game.getPerSecond()})`);
+// Balance: baseProduction 0.1 × PROD_SCALE 0.10 = 0.01 €/s per Praktikant.
+ok(Math.abs(game.getPerSecond() - 0.01) < 1e-9, `€/s is 0.01 (got ${game.getPerSecond()})`);
 ok(Math.abs(game.company.money.amount - 985) < 1e-9, 'money 1000-15=985');
 ok(prakt.getCost(10) > 150, 'buying 10 costs more than 10× base (growth)');
 
@@ -68,10 +69,20 @@ ok(game.buyUpgrade('au-local-0-0'), 'buy asset upgrade');
 ok(Math.abs(prakt.getProduction() - before * 2) < 1e-3, 'asset upgrade doubles output');
 
 // --- World unlock + achievements via lifetime earnings ---
-game.player.lifetimeEarned = 2e6;
+game.player.lifetimeEarned = 2e7; // national now gates at €10M lifetime (rebalanced)
 game.checkProgress();
-ok(game.getWorld('national').unlocked, 'national unlocks at €1M lifetime');
+ok(game.getWorld('national').unlocked, 'national unlocks at €10M lifetime');
 ok(game.achievements.find((a) => a.id === 'ach-money-1').unlocked, 'first-million achievement');
+
+// --- Prestige-gated later world (finance needs earnings AND a Börsengang) ---
+game.player.lifetimeEarned = 1e18; // well past finance's €100 Brd. earnings gate
+game.player.prestigeLevel = 0;
+game.checkProgress();
+ok(!game.getWorld('finance').unlocked, 'finance stays LOCKED on earnings alone (prestige-level gate)');
+game.player.prestigeLevel = 1;
+game.checkProgress();
+ok(game.getWorld('finance').unlocked, 'finance unlocks once earnings + 1 prestige are met');
+game.player.prestigeLevel = 0; // reset so later prestige assertions are unaffected
 
 // --- New worlds & content ---
 ok(game.worlds.length === 9, `9 worlds total (got ${game.worlds.length})`);
@@ -98,8 +109,8 @@ ok(game.player.goldenClicks === 1, 'golden click counted');
 ok(game.company.money.amount > goldBefore, 'golden lucky added money');
 
 // --- Prestige ---
-game.player.runEarned = 1e12;
-ok(game.player.computePrestigeGain() === 10, `prestige gain 10 for 1e12 (got ${game.player.computePrestigeGain()})`);
+game.player.runEarned = 1e15; // gain = cbrt(1e15 / 1e12) = 10 (rebalanced divisor)
+ok(game.player.computePrestigeGain() === 10, `prestige gain 10 for 1e15 (got ${game.player.computePrestigeGain()})`);
 const lifetimeBefore = game.player.lifetimeEarned;
 ok(game.prestige(), 'prestige succeeds');
 ok(game.player.prestigePoints === 10, 'gained 10 influence');

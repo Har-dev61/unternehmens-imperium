@@ -29,7 +29,9 @@ export class Asset {
         this.type = config.type ?? 'asset';
         this.baseCost = config.baseCost;
         this.baseProduction = config.baseProduction;
-        this.costMultiplier = config.costMultiplier ?? 1.15;
+        // Steeper default growth (1.22 vs the classic 1.15) flattens the income
+        // curve: each additional unit costs noticeably more, so counts climb slower.
+        this.costMultiplier = config.costMultiplier ?? 1.22;
         this.world = world;
     }
     /**

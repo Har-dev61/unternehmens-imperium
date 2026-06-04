@@ -11,7 +11,7 @@ export const PRESTIGE_UPGRADES = [
         description: 'Offline-Einnahmen: volle Effizienz und bis zu 24 Stunden.',
         offline: { efficiency: 1.0, cap: 24 * 3600 } },
     { id: 'pp-board', name: 'KI-Vorstand', icon: '🧠', cost: 13,
-        description: '+10 automatische Klicks pro Sekunde.', effects: [{ type: 'autoclick', amount: 10 }] },
+        description: '+5 automatische Klicks pro Sekunde.', effects: [{ type: 'autoclick', amount: 5 }] },
     { id: 'pp-magnate', name: 'Wirtschaftsmagnat', icon: '👑', cost: 25,
         description: '×3 auf alle Einnahmen.', effects: [{ type: 'global', multiplier: 3 }] },
     { id: 'pp-dynasty', name: 'Wirtschaftsdynastie', icon: '🏛️', cost: 50,

@@ -49,7 +49,9 @@ export class Player {
 
   /** Potential Einfluss gain if the player prestiged right now. */
   computePrestigeGain(): number {
-    return Math.floor(Math.cbrt(this.runEarned / 1e9));
+    // Higher divisor (1e12 vs 1e9) makes Einfluss/"XP" accrue far slower, so
+    // prestige rewards long play instead of being farmable within minutes.
+    return Math.floor(Math.cbrt(this.runEarned / 1e12));
   }
 
   toJSON(): PlayerData {

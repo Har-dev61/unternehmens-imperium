@@ -79,6 +79,6 @@ export class GoldenDeal {
   }
 
   private randomInterval(): number {
-    return 120 + Math.random() * 180; // 2–5 minutes
+    return 300 + Math.random() * 300; // 5–10 minutes
   }
 }

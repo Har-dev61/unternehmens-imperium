@@ -574,7 +574,7 @@ export class UIManager {
           <div><span class="pl">Gewinn bei Reset</span><span class="pv">+${formatNumber(gain)}</span></div>
         </div>
         <button id="do-prestige" class="btn-prestige" ${gain < 1 ? 'disabled' : ''}>
-          ${gain < 1 ? 'Noch zu klein (mind. €1 Mrd. nötig)' : `An die Börse gehen → +${formatNumber(gain)} Einfluss`}
+          ${gain < 1 ? 'Noch zu klein (mind. €1 Bio. nötig)' : `An die Börse gehen → +${formatNumber(gain)} Einfluss`}
         </button>
       </div>
       <h3>Prestige-Upgrades (dauerhaft)</h3>

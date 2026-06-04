@@ -36,6 +36,8 @@ export class Game {
     clickFrenzy = { mult: 1, until: 0 };
     activeWorldId = 'local';
     settings = { muted: false, autosave: true, buyQuantity: '1' };
+    /** Balancing knob: global throttle on research-point generation (lower = slower). */
+    RESEARCH_RATE = 0.1;
     worldIndex = new Map();
     assetIndex = new Map();
     // Cached derived values, refreshed by computeDerived().
@@ -191,7 +193,9 @@ export class Game {
         this._clickValue = clickValue;
         this._perSecond = passive + autoIncome;
         // Forschung: Assets erzeugen Forschungspunkte (Gebäude voll, Mitarbeiter halb).
-        this._researchPerSecond = (this.getBuildingCount() + this.getEmployeeCount() * 0.5) * c.researchRateMult;
+        // RESEARCH_RATE drosselt das Grundtempo stark, damit der Forschungsbaum
+        // Stunden statt Sekunden braucht (Balancing-Stellschraube).
+        this._researchPerSecond = (this.getBuildingCount() + this.getEmployeeCount() * 0.5) * c.researchRateMult * this.RESEARCH_RATE;
         this.company.research.perSecond = this._researchPerSecond;
     }
     getPerSecond() { return this._perSecond; }
@@ -364,17 +368,19 @@ export class Game {
         let result;
         switch (deal.type) {
             case 'frenzy':
-                this.eventManager.addEvent({ id: 'golden-frenzy', name: '💎 Kaufrausch ×7', multiplier: 7, duration: 30, source: 'golden' });
-                result = { type: deal.type, title: '💎 Kaufrausch!', text: '×7 auf alle Einnahmen für 30 s' };
+                this.eventManager.addEvent({ id: 'golden-frenzy', name: '💎 Kaufrausch ×3', multiplier: 3, duration: 30, source: 'golden' });
+                result = { type: deal.type, title: '💎 Kaufrausch!', text: '×3 auf alle Einnahmen für 30 s' };
                 break;
             case 'clickFrenzy':
-                this.clickFrenzy = { mult: 777, until: Date.now() + 13_000 };
+                this.clickFrenzy = { mult: 25, until: Date.now() + 15_000 };
                 this.computeDerived();
-                result = { type: deal.type, title: '💎 Klick-Rausch!', text: 'Klickwert ×777 für 13 s' };
+                result = { type: deal.type, title: '💎 Klick-Rausch!', text: 'Klickwert ×25 für 15 s' };
                 break;
             case 'lucky':
             default: {
-                const gain = Math.max(this._perSecond * 900, this.company.money.amount * 0.15, this._clickValue * 100);
+                // Stark gedrosselt: ~30 s Einkommen (statt 15 min) und kein %-Anteil am
+                // Kapital mehr (verhinderte den Geld-Runaway). Klick-Variante als Floor.
+                const gain = Math.max(this._perSecond * 30, this._clickValue * 40);
                 this.company.money.add(gain);
                 this.player.runEarned += gain;
                 this.player.lifetimeEarned += gain;
@@ -424,7 +430,7 @@ export class Game {
         const continues = Date.now() - this.player.lastDailyClaim <= this.DAILY_STREAK_WINDOW;
         this.player.dailyStreak = continues ? this.player.dailyStreak + 1 : 1;
         this.player.lastDailyClaim = Date.now();
-        const influence = Math.min(10, Math.max(1, Math.floor(this.player.dailyStreak / 2)));
+        const influence = Math.min(5, Math.max(1, Math.floor(this.player.dailyStreak / 3)));
         const money = Math.max(this._perSecond * 1800, 1000); // ~30 min Einnahmen, min. €1000
         this.player.prestigePoints += influence;
         this.company.money.add(money);

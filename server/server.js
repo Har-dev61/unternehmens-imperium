@@ -205,10 +205,10 @@ app.post('/api/leaderboard', requireAuth, (req, res) => {
 // event (a genuine "server broadcast"), with the remaining duration computed
 // server-side.
 const EVENT_POOL = [
-  { id: 'boom', name: '📈 Globaler Wirtschaftsboom', multiplier: 3, duration: 120 },
-  { id: 'viral', name: '🔥 Virale Marketing-Kampagne', multiplier: 5, duration: 60 },
-  { id: 'merger', name: '🤝 Fusionswelle', multiplier: 2, duration: 180 },
-  { id: 'subsidy', name: '🏛️ Staatliche Subventionen', multiplier: 4, duration: 90 },
+  { id: 'boom', name: '📈 Globaler Wirtschaftsboom', multiplier: 2, duration: 120 },
+  { id: 'viral', name: '🔥 Virale Marketing-Kampagne', multiplier: 3, duration: 60 },
+  { id: 'merger', name: '🤝 Fusionswelle', multiplier: 1.8, duration: 180 },
+  { id: 'subsidy', name: '🏛️ Staatliche Subventionen', multiplier: 2.5, duration: 90 },
 ];
 
 function currentEvents() {
@@ -216,7 +216,7 @@ function currentEvents() {
   const bucket = Math.floor(Date.now() / windowMs);
   // Deterministic pseudo-random from the bucket index.
   const r = Math.abs(Math.sin(bucket * 12.9898) * 43758.5453) % 1;
-  if (r > 0.45) return []; // ~45% of windows broadcast an event
+  if (r > 0.3) return []; // ~30% of windows broadcast an event
   const e = EVENT_POOL[Math.floor((r * 1000) % EVENT_POOL.length)];
   const startedAt = bucket * windowMs;
   const remaining = e.duration - (Date.now() - startedAt) / 1000;

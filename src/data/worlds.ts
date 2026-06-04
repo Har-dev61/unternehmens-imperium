@@ -24,6 +24,12 @@ const LADDER: { cost: number; prod: number }[] = [
   { cost: 20_000_000, prod: 7_800 },
 ];
 
+/**
+ * Balancing knob: global production scale. Costs stay put, output is cut, so
+ * every asset's payback time lengthens — a clean, uniform income reduction.
+ */
+const PROD_SCALE = 0.10;
+
 function buildAssets(worldId: string, scale: number, defs: AssetDef[]): AssetConfig[] {
   return defs.map((d, i) => ({
     id: `${worldId}-${i}`,
@@ -32,12 +38,21 @@ function buildAssets(worldId: string, scale: number, defs: AssetDef[]): AssetCon
     type: d.type,
     description: d.desc,
     baseCost: LADDER[i].cost * scale,
-    baseProduction: LADDER[i].prod * scale,
+    baseProduction: LADDER[i].prod * scale * PROD_SCALE,
   }));
 }
 
 /** Convenience for unlock predicates. */
 const earned = (n: number) => (game: Game): boolean => game.player.lifetimeEarned >= n;
+
+/**
+ * Long-term gate: the later worlds need lifetime earnings AND a minimum number
+ * of Börsengänge (prestige levels). Since Einfluss accrues slowly, this forces
+ * the prestige/reset meta-loop — the back half of the game unfolds over days
+ * and weeks of repeated runs, not a single sitting.
+ */
+const gate = (n: number, prestigeLevel: number) => (game: Game): boolean =>
+  game.player.lifetimeEarned >= n && game.player.prestigeLevel >= prestigeLevel;
 
 export const WORLD_DEFS: WorldConfig[] = [
   {
@@ -63,9 +78,9 @@ export const WORLD_DEFS: WorldConfig[] = [
     icon: '🏙️',
     theme: 'national',
     description: 'Expandiere über die Stadtgrenzen hinaus auf den nationalen Markt.',
-    unlock: earned(1e6),
-    unlockAt: 1e6,
-    unlockHint: 'Verdiene insgesamt €1 Mio.',
+    unlock: earned(1e7),
+    unlockAt: 1e7,
+    unlockHint: 'Verdiene insgesamt €10 Mio.',
     assets: buildAssets('national', 1e3, [
       { name: 'Vertriebsmitarbeiter', icon: '🧑‍💼', type: 'employee', desc: 'Kennt jeden Einkäufer im Land.' },
       { name: 'Regionalbüro', icon: '🏢', type: 'building', desc: 'Präsenz in jeder Großstadt.' },
@@ -82,9 +97,9 @@ export const WORLD_DEFS: WorldConfig[] = [
     icon: '🌍',
     theme: 'global',
     description: 'Die ganze Welt wird zu deinem Absatzmarkt.',
-    unlock: earned(1e9),
-    unlockAt: 1e9,
-    unlockHint: 'Verdiene insgesamt €1 Mrd.',
+    unlock: earned(1e11),
+    unlockAt: 1e11,
+    unlockHint: 'Verdiene insgesamt €100 Mrd.',
     assets: buildAssets('global', 1e6, [
       { name: 'Übersetzer-Team', icon: '🌐', type: 'employee', desc: 'Spricht alle Sprachen des Marktes.' },
       { name: 'Auslandsniederlassung', icon: '🏛️', type: 'building', desc: 'Flaggen auf jedem Kontinent.' },
@@ -101,9 +116,9 @@ export const WORLD_DEFS: WorldConfig[] = [
     icon: '💻',
     theme: 'tech',
     description: 'Software frisst die Welt — und du servierst sie.',
-    unlock: earned(1e12),
-    unlockAt: 1e12,
-    unlockHint: 'Verdiene insgesamt €1 Bio.',
+    unlock: earned(1e15),
+    unlockAt: 1e15,
+    unlockHint: 'Verdiene insgesamt €1 Brd.',
     assets: buildAssets('tech', 1e9, [
       { name: 'Softwareentwickler', icon: '👨‍💻', type: 'employee', desc: 'Verwandelt Kaffee in Code.' },
       { name: 'Startup-Inkubator', icon: '🚀', type: 'building', desc: 'Brutkasten für die nächste Idee.' },
@@ -120,9 +135,9 @@ export const WORLD_DEFS: WorldConfig[] = [
     icon: '💹',
     theme: 'finance',
     description: 'Geld arbeitet jetzt für dich — Tag und Nacht an den Börsen.',
-    unlock: earned(1e15),
-    unlockAt: 1e15,
-    unlockHint: 'Verdiene insgesamt €1 Brd.',
+    unlock: gate(1e17, 1),
+    unlockAt: 1e17,
+    unlockHint: 'Verdiene €100 Brd. (10^17) und gehe 1× an die Börse (Prestige).',
     assets: buildAssets('finance', 1e12, [
       { name: 'Börsenhändler', icon: '📈', type: 'employee', desc: 'Kauft tief, verkauft hoch.' },
       { name: 'Investmentfonds', icon: '💹', type: 'building', desc: 'Diversifiziert in alles.' },
@@ -139,9 +154,9 @@ export const WORLD_DEFS: WorldConfig[] = [
     icon: '🚀',
     theme: 'space',
     description: 'Der Himmel war nie die Grenze. Die Wirtschaft wird interplanetar.',
-    unlock: earned(1e18),
-    unlockAt: 1e18,
-    unlockHint: 'Verdiene insgesamt €1 Trill.',
+    unlock: gate(1e19, 2),
+    unlockAt: 1e19,
+    unlockHint: 'Verdiene €10 Trill. (10^19) und 2 Börsengänge.',
     assets: buildAssets('space', 1e15, [
       { name: 'Astronauten-Crew', icon: '🧑‍🚀', type: 'employee', desc: 'Pioniere mit Helm.' },
       { name: 'Startrampe', icon: '🛫', type: 'building', desc: 'Wöchentliche Raketenstarts.' },
@@ -158,9 +173,9 @@ export const WORLD_DEFS: WorldConfig[] = [
     icon: '🕶️',
     theme: 'metaverse',
     description: 'Die letzte Grenze ist virtuell — und unendlich skalierbar.',
-    unlock: earned(1e21),
+    unlock: gate(1e21, 3),
     unlockAt: 1e21,
-    unlockHint: 'Verdiene insgesamt €1 Trd. (10^21).',
+    unlockHint: 'Verdiene €1 Trd. (10^21) und 3 Börsengänge.',
     assets: buildAssets('metaverse', 1e18, [
       { name: 'Avatar-Designer', icon: '🧝', type: 'employee', desc: 'Erschafft digitale Identitäten.' },
       { name: 'Virtuelles Grundstück', icon: '🟦', type: 'building', desc: 'Lage, Lage, Lage — in Pixeln.' },
@@ -177,9 +192,9 @@ export const WORLD_DEFS: WorldConfig[] = [
     icon: '🧬',
     theme: 'biotech',
     description: 'Die Wirtschaft des Lebens selbst — von Genen bis zur Unsterblichkeit.',
-    unlock: earned(1e24),
+    unlock: gate(1e24, 5),
     unlockAt: 1e24,
-    unlockHint: 'Verdiene insgesamt €1 Quad. (10^24).',
+    unlockHint: 'Verdiene €1 Quad. (10^24) und 5 Börsengänge.',
     assets: buildAssets('biotech', 1e21, [
       { name: 'Laborant', icon: '🥼', type: 'employee', desc: 'Pipettiert die Zukunft zusammen.' },
       { name: 'Genlabor', icon: '🧫', type: 'building', desc: 'Wo Code zu Leben wird.' },
@@ -196,9 +211,9 @@ export const WORLD_DEFS: WorldConfig[] = [
     icon: '🤖',
     theme: 'ai',
     description: 'Die letzte Erfindung der Menschheit arbeitet jetzt für dich.',
-    unlock: earned(1e27),
+    unlock: gate(1e27, 8),
     unlockAt: 1e27,
-    unlockHint: 'Verdiene insgesamt €1 Quint. (10^27).',
+    unlockHint: 'Verdiene €1 Quint. (10^27) und 8 Börsengänge.',
     assets: buildAssets('ai', 1e24, [
       { name: 'ML-Forscher', icon: '🧑‍🔬', type: 'employee', desc: 'Bringt Maschinen das Denken bei.' },
       { name: 'Trainings-Cluster', icon: '🖥️', type: 'building', desc: 'Petaflops im Dauerlauf.' },

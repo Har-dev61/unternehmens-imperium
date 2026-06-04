@@ -1,8 +1,8 @@
 const LOCAL_EVENTS = [
-    { id: 'rush', name: '⚡ Auftragsboom', multiplier: 2, duration: 45 },
-    { id: 'press', name: '📰 Positive Presse', multiplier: 1.5, duration: 90 },
-    { id: 'investor', name: '💼 Investoren-Hype', multiplier: 3, duration: 30 },
-    { id: 'season', name: '🎁 Saison-Hochbetrieb', multiplier: 2.5, duration: 60 },
+    { id: 'rush', name: '⚡ Auftragsboom', multiplier: 1.5, duration: 45 },
+    { id: 'press', name: '📰 Positive Presse', multiplier: 1.3, duration: 90 },
+    { id: 'investor', name: '💼 Investoren-Hype', multiplier: 2, duration: 30 },
+    { id: 'season', name: '🎁 Saison-Hochbetrieb', multiplier: 1.8, duration: 60 },
 ];
 /**
  * Manages temporary economic boosts. Local random events fire every few
@@ -63,7 +63,7 @@ export class EventManager {
         return this.active.reduce((m, e) => m * e.multiplier, 1);
     }
     randomInterval() {
-        return 180 + Math.random() * 180; // 3–6 minutes
+        return 360 + Math.random() * 240; // 6–10 minutes
     }
     toJSON() {
         return { active: this.active, secondsUntilNextLocal: this.secondsUntilNextLocal };

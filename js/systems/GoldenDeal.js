@@ -64,7 +64,7 @@ export class GoldenDeal {
         return 'lucky';
     }
     randomInterval() {
-        return 120 + Math.random() * 180; // 2–5 minutes
+        return 300 + Math.random() * 300; // 5–10 minutes
     }
 }
 //# sourceMappingURL=GoldenDeal.js.map

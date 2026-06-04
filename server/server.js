@@ -24,6 +24,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { queries, tx, seedRivalsIfEmpty } from './db.js';
 import { sendVerification, sendPasswordReset, DEV_RETURN_TOKENS } from './mailer.js';
 import * as resources from './resources.js';
+import * as trade from './trade.js';
 
 const PORT = process.env.PORT ?? 3000;
 // In production bind to 127.0.0.1 so the backend is only reachable through the
@@ -349,11 +350,55 @@ app.post('/api/resources/build', requireAuth, (req, res) => {
   res.json(result);
 });
 
+// --- Trading lobbies (Phase 3) ---------------------------------------------
+// NB: /history is registered before /:id so it isn't captured as an id.
+app.get('/api/lobbies', requireAuth, (req, res) => res.json({ lobbies: trade.listLobbies(req.query.search ?? '') }));
+
+app.post('/api/lobbies', requireAuth, (req, res) => {
+  const r = tx(() => trade.createLobby(req.user.id, req.body?.title));
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
+app.get('/api/lobbies/history', requireAuth, (req, res) => res.json({ history: trade.history(req.user.id) }));
+
+app.get('/api/lobbies/:id', requireAuth, (req, res) => {
+  const r = tx(() => trade.getLobbyState(req.user.id, req.params.id));
+  if (r.error) return res.status(404).json({ error: r.error });
+  res.json(r);
+});
+
+app.post('/api/lobbies/:id/join', requireAuth, (req, res) => {
+  const r = tx(() => trade.joinLobby(req.user.id, req.params.id));
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
+app.post('/api/lobbies/:id/offer', requireAuth, (req, res) => {
+  const r = tx(() => trade.setOffer(req.user.id, req.params.id, req.body?.offer ?? {}));
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(tx(() => trade.getLobbyState(req.user.id, req.params.id)));
+});
+
+app.post('/api/lobbies/:id/confirm', requireAuth, (req, res) => {
+  const r = tx(() => trade.confirm(req.user.id, req.params.id, !!req.body?.confirmed));
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(tx(() => trade.getLobbyState(req.user.id, req.params.id)));
+});
+
+app.post('/api/lobbies/:id/leave', requireAuth, (req, res) => {
+  const r = tx(() => trade.leaveLobby(req.user.id, req.params.id));
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
 // --- Health ----------------------------------------------------------------
 app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
 // --- Start -----------------------------------------------------------------
 seedRivalsIfEmpty();
+// Periodically cancel idle trade lobbies and refund their escrow.
+setInterval(() => { try { trade.sweepExpired(); } catch (e) { console.warn('[trade] sweep failed:', e.message); } }, 60_000);
 app.listen(PORT, HOST, () => {
   console.log(`🏢 Imperium-Backend läuft auf http://${HOST}:${PORT}`);
 });

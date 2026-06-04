@@ -435,6 +435,38 @@ h3 { font-size: 0.95rem; margin: 0.9rem 0 0.5rem; color: var(--muted); text-tran
 .rb-cost { font-weight: 700; color: var(--warn); font-size: 0.78rem; white-space: nowrap; text-align: right; }
 .res-build.affordable .rb-cost { color: var(--good); }
 
+/* ===== Trading (Phase 3) ===== */
+.trade-create, .trade-search { display: flex; gap: 0.5rem; margin-bottom: 0.6rem; }
+.trade-create input, .trade-search input { flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 9px; color: var(--text); padding: 0.5rem 0.7rem; font-size: 16px; }
+.trade-create input:focus, .trade-search input:focus { outline: none; border-color: var(--accent); }
+.trade-create button { white-space: nowrap; }
+.lobby-list { display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 0.6rem; }
+.lobby-row { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 0.5rem 0.75rem; }
+.lobby-info { display: flex; flex-direction: column; min-width: 0; }
+.lobby-meta { font-size: 0.72rem; color: var(--muted); }
+.lobby-meta code, .trade-head code, .trade-wait code { background: var(--panel-3); padding: 0.05rem 0.35rem; border-radius: 6px; }
+.btn-prestige.small, .lobby-row .btn-prestige { width: auto; padding: 0.4rem 0.8rem; font-size: 0.82rem; }
+.trade-history { display: flex; flex-direction: column; gap: 0.3rem; }
+.hist-row { font-size: 0.8rem; color: var(--muted); background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 0.4rem 0.6rem; }
+.trade-room { display: flex; flex-direction: column; gap: 0.7rem; }
+.trade-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.85rem; }
+.trade-wait { background: color-mix(in srgb, var(--warn) 12%, var(--panel-2)); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  border-radius: 9px; padding: 0.5rem 0.7rem; font-size: 0.82rem; }
+.trade-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+.trade-col { background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; padding: 0.7rem; }
+.trade-col h3 { margin: 0 0 0.5rem; color: var(--text); text-transform: none; letter-spacing: 0; font-size: 0.9rem; }
+.offer-editor { display: flex; flex-direction: column; gap: 0.35rem; }
+.offer-edit-row { display: grid; grid-template-columns: auto 1fr 5rem; align-items: center; gap: 0.4rem; }
+.oe-name { font-size: 0.8rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.offer-edit-row input { width: 100%; background: var(--panel-3); border: 1px solid var(--border); border-radius: 7px;
+  color: var(--text); padding: 0.3rem 0.4rem; font-size: 16px; text-align: right; }
+.offer-view { font-size: 0.9rem; font-weight: 700; line-height: 1.6; word-break: break-word; }
+.trade-confirm { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; font-weight: 600;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 0.8rem; }
+
 /* ===== Modal ===== */
 #modal-layer { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
   background: rgba(3, 6, 14, 0.7); backdrop-filter: blur(4px); padding: 1rem; }

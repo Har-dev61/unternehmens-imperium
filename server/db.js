@@ -70,6 +70,39 @@ db.exec(`
     last_tick INTEGER NOT NULL
   );
 
+  /* --- Trading: lobbies + escrowed offers + history (Phase 3) --- */
+  CREATE TABLE IF NOT EXISTS lobbies (
+    id         TEXT PRIMARY KEY,
+    creator_id INTEGER NOT NULL REFERENCES users(id),
+    joiner_id  INTEGER REFERENCES users(id),
+    status     TEXT NOT NULL DEFAULT 'open',   -- open | active | completed | cancelled
+    title      TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS lobby_offers (
+    lobby_id  TEXT NOT NULL REFERENCES lobbies(id),
+    user_id   INTEGER NOT NULL REFERENCES users(id),
+    escrow    TEXT NOT NULL DEFAULT '{}',       -- {type: amount} already deducted from the bag
+    confirmed INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (lobby_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS trade_history (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    lobby_id     TEXT NOT NULL,
+    a_id         INTEGER NOT NULL,
+    b_id         INTEGER NOT NULL,
+    a_gave       TEXT NOT NULL,
+    b_gave       TEXT NOT NULL,
+    completed_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_lobbies_status ON lobbies(status, updated_at);
+  CREATE INDEX IF NOT EXISTS idx_history_a ON trade_history(a_id, completed_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_history_b ON trade_history(b_id, completed_at DESC);
+
   CREATE INDEX IF NOT EXISTS idx_users_token ON users(token);
   CREATE INDEX IF NOT EXISTS idx_lb_valuation ON leaderboard(valuation DESC);
   /* Partial unique index: at most one account per e-mail, but many NULLs
@@ -143,6 +176,34 @@ const stmts = {
     `INSERT INTO player_buildings (user_id, building_id, count) VALUES (?, ?, ?)
      ON CONFLICT(user_id, building_id) DO UPDATE SET count = excluded.count`
   ),
+  // --- Trading (Phase 3) ---
+  createLobby: db.prepare('INSERT INTO lobbies (id, creator_id, status, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'),
+  getLobby: db.prepare('SELECT * FROM lobbies WHERE id = ?'),
+  lobbyView: db.prepare(
+    `SELECT l.*, cu.username AS creator_name, ju.username AS joiner_name
+     FROM lobbies l JOIN users cu ON cu.id = l.creator_id
+     LEFT JOIN users ju ON ju.id = l.joiner_id WHERE l.id = ?`
+  ),
+  listOpen: db.prepare(
+    `SELECT l.id, l.title, l.created_at, l.updated_at, cu.username AS creator_name
+     FROM lobbies l JOIN users cu ON cu.id = l.creator_id
+     WHERE l.status = 'open' ORDER BY l.updated_at DESC LIMIT ?`
+  ),
+  setLobbyStatus: db.prepare('UPDATE lobbies SET status = ?, updated_at = ? WHERE id = ?'),
+  setLobbyJoiner: db.prepare('UPDATE lobbies SET joiner_id = ?, status = ?, updated_at = ? WHERE id = ?'),
+  touchLobby: db.prepare('UPDATE lobbies SET updated_at = ? WHERE id = ?'),
+  countOpenByCreator: db.prepare("SELECT COUNT(*) AS n FROM lobbies WHERE creator_id = ? AND status IN ('open','active')"),
+  staleLobbies: db.prepare("SELECT * FROM lobbies WHERE status IN ('open','active') AND updated_at < ?"),
+  getOffers: db.prepare('SELECT user_id, escrow, confirmed FROM lobby_offers WHERE lobby_id = ?'),
+  upsertOffer: db.prepare(
+    `INSERT INTO lobby_offers (lobby_id, user_id, escrow, confirmed) VALUES (?, ?, ?, ?)
+     ON CONFLICT(lobby_id, user_id) DO UPDATE SET escrow = excluded.escrow, confirmed = excluded.confirmed`
+  ),
+  setConfirmed: db.prepare('UPDATE lobby_offers SET confirmed = ? WHERE lobby_id = ? AND user_id = ?'),
+  resetConfirms: db.prepare('UPDATE lobby_offers SET confirmed = 0 WHERE lobby_id = ?'),
+  deleteOffers: db.prepare('DELETE FROM lobby_offers WHERE lobby_id = ?'),
+  insertHistory: db.prepare('INSERT INTO trade_history (lobby_id, a_id, b_id, a_gave, b_gave, completed_at) VALUES (?, ?, ?, ?, ?, ?)'),
+  historyFor: db.prepare('SELECT * FROM trade_history WHERE a_id = ? OR b_id = ? ORDER BY completed_at DESC LIMIT ?'),
 };
 
 /** Run `fn` inside an immediate (write-locking) transaction; rolls back on throw. */
@@ -187,6 +248,23 @@ export const queries = {
   setResource: (userId, type, amount) => stmts.resUpsert.run(userId, type, amount),
   getBuildings: (userId) => stmts.bldAll.all(userId),            // [{ building_id, count }]
   setBuilding: (userId, buildingId, count) => stmts.bldUpsert.run(userId, buildingId, count),
+  // --- Trading (Phase 3) ---
+  createLobby: (id, creatorId, title) => stmts.createLobby.run(id, creatorId, 'open', title ?? null, Date.now(), Date.now()),
+  getLobby: (id) => stmts.getLobby.get(id),
+  getLobbyView: (id) => stmts.lobbyView.get(id),
+  listOpenLobbies: (limit = 50) => stmts.listOpen.all(limit),
+  setLobbyStatus: (id, status) => stmts.setLobbyStatus.run(status, Date.now(), id),
+  setLobbyJoiner: (id, joinerId, status) => stmts.setLobbyJoiner.run(joinerId, status, Date.now(), id),
+  touchLobby: (id) => stmts.touchLobby.run(Date.now(), id),
+  countOpenLobbies: (creatorId) => stmts.countOpenByCreator.get(creatorId).n,
+  getStaleLobbies: (beforeTs) => stmts.staleLobbies.all(beforeTs),
+  getOffers: (lobbyId) => stmts.getOffers.all(lobbyId),          // [{ user_id, escrow, confirmed }]
+  upsertOffer: (lobbyId, userId, escrowJson, confirmed) => stmts.upsertOffer.run(lobbyId, userId, escrowJson, confirmed ? 1 : 0),
+  setOfferConfirmed: (lobbyId, userId, confirmed) => stmts.setConfirmed.run(confirmed ? 1 : 0, lobbyId, userId),
+  resetLobbyConfirms: (lobbyId) => stmts.resetConfirms.run(lobbyId),
+  deleteLobbyOffers: (lobbyId) => stmts.deleteOffers.run(lobbyId),
+  insertTradeHistory: (lobbyId, aId, bId, aGave, bGave) => stmts.insertHistory.run(lobbyId, aId, bId, aGave, bGave, Date.now()),
+  getTradeHistory: (userId, limit = 20) => stmts.historyFor.all(userId, userId, limit),
 };
 
 /** Seed a handful of AI rivals once, so a fresh leaderboard isn't empty. */

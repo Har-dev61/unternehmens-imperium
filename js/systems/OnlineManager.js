@@ -123,6 +123,41 @@ export class OnlineManager {
             throw new Error('Dafür musst du online angemeldet sein.');
         return this.api('/api/resources/build', { method: 'POST', body: { buildingId, quantity }, auth: true });
     }
+    // === Trading lobbies (Phase 3) ==========================================
+    requireServer() { if (!this.usingServer)
+        throw new Error('Dafür musst du online angemeldet sein.'); }
+    async listLobbies(search = '') {
+        this.requireServer();
+        return (await this.api('/api/lobbies?search=' + encodeURIComponent(search), { auth: true })).lobbies ?? [];
+    }
+    async createLobby(title = '') {
+        this.requireServer();
+        return this.api('/api/lobbies', { method: 'POST', body: { title }, auth: true });
+    }
+    async getLobby(id) {
+        this.requireServer();
+        return this.api('/api/lobbies/' + encodeURIComponent(id), { auth: true });
+    }
+    async joinLobby(id) {
+        this.requireServer();
+        return this.api('/api/lobbies/' + encodeURIComponent(id) + '/join', { method: 'POST', body: {}, auth: true });
+    }
+    async setLobbyOffer(id, offer) {
+        this.requireServer();
+        return this.api('/api/lobbies/' + encodeURIComponent(id) + '/offer', { method: 'POST', body: { offer }, auth: true });
+    }
+    async confirmTrade(id, confirmed) {
+        this.requireServer();
+        return this.api('/api/lobbies/' + encodeURIComponent(id) + '/confirm', { method: 'POST', body: { confirmed }, auth: true });
+    }
+    async leaveLobby(id) {
+        this.requireServer();
+        return this.api('/api/lobbies/' + encodeURIComponent(id) + '/leave', { method: 'POST', body: {}, auth: true });
+    }
+    async tradeHistory() {
+        this.requireServer();
+        return (await this.api('/api/lobbies/history', { auth: true })).history ?? [];
+    }
     logout() {
         this.token = null;
         localStorage.removeItem(this.storageKey + '-token');

@@ -28,6 +28,12 @@ export class UIManager {
     resIconMap = {};
     resNameMap = {};
     resourceSyncAccum = 0;
+    // Trading (Phase 3): which lobby we're in (null = browsing the list), the last
+    // polled lobby state, the list search term, and a poll accumulator.
+    tradeLobbyId = null;
+    tradeState = null;
+    tradeSearch = '';
+    tradePollAccum = 0;
     clickButton;
     shopList;
     floatLayer;
@@ -151,8 +157,15 @@ export class UIManager {
         this.bus.on('event:started', (e) => {
             this.notify.show({ title: e.name, text: `×${e.multiplier} Einnahmen`, icon: '🎉', kind: 'rare', duration: 5000 });
         });
-        this.bus.on('online:session', () => { this.buildOnline(); if (this.activeTab === 'resources')
-            void this.buildResources(); });
+        this.bus.on('online:session', () => {
+            this.buildOnline();
+            if (this.activeTab === 'resources')
+                void this.buildResources();
+            if (this.activeTab === 'trade') {
+                this.tradeLobbyId = null;
+                void this.buildTrade();
+            }
+        });
         this.bus.on('online:expired', () => this.notify.show({
             title: 'Sitzung abgelaufen', text: 'Bitte melde dich erneut an.', icon: '🔑', kind: 'info', duration: 6000,
         }));
@@ -204,6 +217,14 @@ export class UIManager {
                 if (this.resourceSyncAccum >= 20) {
                     this.resourceSyncAccum = 0;
                     void this.syncResources();
+                }
+            }
+            if (this.activeTab === 'trade') {
+                this.tradePollAccum += 0.4;
+                const interval = this.tradeLobbyId ? 1.6 : 6; // poll the room fast, the list slowly
+                if (this.tradePollAccum >= interval) {
+                    this.tradePollAccum = 0;
+                    void this.pollTrade();
                 }
             }
         }
@@ -1078,6 +1099,245 @@ export class UIManager {
         }
         catch { /* offline blip — keep extrapolating from the last snapshot */ }
     }
+    // === Trading (Phase 3) ==================================================
+    resIcon(t) { return this.resIconMap[t] ?? '📦'; }
+    fmtBundle(b) {
+        const e = Object.entries(b ?? {});
+        return e.length ? e.map(([t, a]) => `${this.resIcon(t)} ${formatNumber(a)}`).join(' · ') : '—';
+    }
+    /** Top-level Handel tab: locked / lobby room / lobby browser. */
+    async buildTrade() {
+        const container = this.$('trade-content');
+        const om = this.game.onlineManager;
+        if (!om.usingServer) {
+            this.tradeLobbyId = null;
+            this.tradeState = null;
+            container.innerHTML = `
+        <div class="res-locked">
+          <p>🔒 Handel läuft serverseitig und ist betrugssicher (Escrow).</p>
+          <p class="hint">Melde dich mit einem Konto (oder als Gast) an, um zu handeln.</p>
+          <button data-act="trade-auth">🔐 Anmelden / Registrieren</button>
+        </div>`;
+            container.querySelector('[data-act="trade-auth"]')?.addEventListener('click', () => this.openAuthModal());
+            return;
+        }
+        try {
+            if (!this.resourceConfig) {
+                this.resourceConfig = await om.fetchResourceConfig();
+                for (const w of this.resourceConfig.worlds)
+                    for (const r of w.resources) {
+                        this.resIconMap[r.type] = r.icon;
+                        this.resNameMap[r.type] = r.name;
+                    }
+            }
+            if (this.tradeLobbyId) {
+                this.tradeState = await om.getLobby(this.tradeLobbyId);
+                if (this.tradeState?.error) {
+                    this.tradeLobbyId = null;
+                    this.tradeState = null;
+                }
+            }
+            if (this.tradeLobbyId && this.tradeState)
+                this.renderLobbyRoom();
+            else
+                await this.renderLobbyList();
+        }
+        catch (e) {
+            container.innerHTML = `<p class="empty">Handel konnte nicht geladen werden: ${escapeHtml(e.message)}</p>`;
+        }
+    }
+    async renderLobbyList() {
+        const om = this.game.onlineManager;
+        const container = this.$('trade-content');
+        let lobbies = [], hist = [];
+        try {
+            lobbies = await om.listLobbies(this.tradeSearch);
+        }
+        catch { /* show empty */ }
+        try {
+            hist = await om.tradeHistory();
+        }
+        catch { /* ignore */ }
+        const rows = lobbies.length ? lobbies.map((l) => `
+      <div class="lobby-row">
+        <div class="lobby-info"><b>${escapeHtml(l.title || 'Handelslobby')}</b>
+          <span class="lobby-meta">von ${escapeHtml(l.creator)} · <code>${escapeHtml(l.id)}</code></span></div>
+        <button class="btn-prestige" data-join="${escapeAttr(l.id)}">Beitreten</button>
+      </div>`).join('') : '<p class="empty">Keine offenen Lobbys. Erstelle die erste!</p>';
+        const histRows = hist.length ? hist.map((h) => `<div class="hist-row">🤝 mit <b>${escapeHtml(h.partner)}</b>: gab ${this.fmtBundle(h.youGave)} · erhielt ${this.fmtBundle(h.youGot)}</div>`).join('')
+            : '<p class="empty">Noch keine Trades.</p>';
+        container.innerHTML = `
+      <div class="trade-create">
+        <input id="lobby-title" type="text" maxlength="60" placeholder="Lobby-Titel (optional)">
+        <button class="btn-prestige" data-act="create">Lobby erstellen</button>
+      </div>
+      <div class="trade-search">
+        <input id="lobby-search" type="text" placeholder="Suchen: Titel / Name / Code" value="${escapeAttr(this.tradeSearch)}">
+        <button class="btn-ghost small" data-act="refresh">Aktualisieren</button>
+      </div>
+      <div class="lobby-list">${rows}</div>
+      <h3>📜 Dein Handelsverlauf</h3>
+      <div class="trade-history">${histRows}</div>`;
+        container.querySelector('[data-act="create"]')?.addEventListener('click', () => this.handleCreateLobby());
+        container.querySelector('[data-act="refresh"]')?.addEventListener('click', () => {
+            this.tradeSearch = container.querySelector('#lobby-search').value;
+            void this.buildTrade();
+        });
+        container.querySelectorAll('[data-join]').forEach((b) => b.addEventListener('click', () => this.handleJoinLobby(b.dataset.join)));
+    }
+    renderLobbyRoom() {
+        const st = this.tradeState;
+        if (!st)
+            return;
+        const container = this.$('trade-content');
+        const you = st.you, partner = st.partner;
+        const waiting = st.status !== 'active';
+        const offerRows = Object.entries(you.resources)
+            .filter(([t, a]) => a > 0 || (you.offer[t] ?? 0) > 0)
+            .map(([t, a]) => {
+            const max = Math.floor(a + (you.offer[t] ?? 0));
+            return `<div class="offer-edit-row">
+          <span class="res-ico">${this.resIcon(t)}</span>
+          <span class="oe-name">${escapeHtml(this.resNameMap[t] ?? t)}</span>
+          <input type="number" min="0" step="1" max="${max}" data-offer="${escapeAttr(t)}" value="${Math.floor(you.offer[t] ?? 0)}">
+        </div>`;
+        }).join('') || '<p class="empty">Keine Rohstoffe zum Anbieten.</p>';
+        const pill = (c) => c ? ' <span class="verify-pill ok">bestätigt</span>' : '';
+        container.innerHTML = `
+      <div class="trade-room">
+        <div class="trade-head">
+          <span>Lobby <code>${escapeHtml(st.id)}</code>${st.title ? ' · ' + escapeHtml(st.title) : ''}</span>
+          <button class="btn-ghost small" data-act="leave">Verlassen</button>
+        </div>
+        ${waiting ? `<p class="trade-wait">⏳ Warte auf Mitspieler … teile den Code <code>${escapeHtml(st.id)}</code>.</p>` : ''}
+        <div class="trade-cols">
+          <div class="trade-col">
+            <h3>Dein Angebot${pill(you.confirmed)}</h3>
+            <div class="offer-editor">${offerRows}</div>
+            <button class="btn-ghost small" data-act="set-offer">Angebot speichern</button>
+          </div>
+          <div class="trade-col">
+            <h3>${partner ? escapeHtml(partner.name) : 'Gegenseite'}${partner ? pill(partner.confirmed) : ''}</h3>
+            <div class="offer-view">${partner ? this.fmtBundle(partner.offer) : '—'}</div>
+          </div>
+        </div>
+        <label class="trade-confirm">
+          <input type="checkbox" data-act="confirm" ${you.confirmed ? 'checked' : ''} ${st.status !== 'active' ? 'disabled' : ''}>
+          Ich bestätige diesen Tausch
+        </label>
+      </div>`;
+        container.querySelector('[data-act="leave"]')?.addEventListener('click', () => this.handleLeaveLobby());
+        container.querySelector('[data-act="set-offer"]')?.addEventListener('click', () => this.handleSetOffer());
+        container.querySelector('[data-act="confirm"]')?.addEventListener('change', (e) => this.handleConfirmTrade(e.target.checked));
+    }
+    async handleCreateLobby() {
+        const title = this.$('trade-content').querySelector('#lobby-title')?.value ?? '';
+        try {
+            this.tradeLobbyId = (await this.game.onlineManager.createLobby(title)).id;
+            await this.buildTrade();
+        }
+        catch (e) {
+            this.notify.show({ title: 'Fehler', text: e.message, icon: '⚠️', kind: 'error' });
+        }
+    }
+    async handleJoinLobby(id) {
+        try {
+            await this.game.onlineManager.joinLobby(id);
+            this.tradeLobbyId = id;
+            await this.buildTrade();
+        }
+        catch (e) {
+            this.notify.show({ title: 'Beitritt fehlgeschlagen', text: e.message, icon: '⚠️', kind: 'error' });
+        }
+    }
+    async handleSetOffer() {
+        if (!this.tradeLobbyId)
+            return;
+        const offer = {};
+        this.$('trade-content').querySelectorAll('[data-offer]').forEach((i) => {
+            const v = Math.floor(Number(i.value));
+            if (v > 0)
+                offer[i.dataset.offer] = v;
+        });
+        try {
+            this.tradeState = await this.game.onlineManager.setLobbyOffer(this.tradeLobbyId, offer);
+            this.renderLobbyRoom();
+            this.playSound(540, 0.05);
+        }
+        catch (e) {
+            this.notify.show({ title: 'Angebot abgelehnt', text: e.message, icon: '⚠️', kind: 'error' });
+        }
+    }
+    async handleConfirmTrade(confirmed) {
+        if (!this.tradeLobbyId)
+            return;
+        try {
+            const st = await this.game.onlineManager.confirmTrade(this.tradeLobbyId, confirmed);
+            this.tradeState = st;
+            if (st.status === 'completed') {
+                this.notify.show({ title: 'Tausch abgeschlossen! 🤝', icon: '✅', kind: 'success', duration: 6000 });
+                this.tradeLobbyId = null;
+                await this.buildTrade();
+            }
+            else
+                this.renderLobbyRoom();
+        }
+        catch (e) {
+            this.notify.show({ title: 'Fehler', text: e.message, icon: '⚠️', kind: 'error' });
+            this.renderLobbyRoom();
+        }
+    }
+    async handleLeaveLobby() {
+        if (this.tradeLobbyId) {
+            try {
+                await this.game.onlineManager.leaveLobby(this.tradeLobbyId);
+            }
+            catch { /* ignore */ }
+        }
+        this.tradeLobbyId = null;
+        this.tradeState = null;
+        await this.buildTrade();
+    }
+    /** Poll the active lobby (live offers/confirmations) without clobbering edits. */
+    async pollTrade() {
+        const om = this.game.onlineManager;
+        if (!om.usingServer)
+            return;
+        if (!this.tradeLobbyId) {
+            await this.renderLobbyList();
+            return;
+        }
+        try {
+            const st = await om.getLobby(this.tradeLobbyId);
+            if (st?.error) {
+                this.tradeLobbyId = null;
+                this.tradeState = null;
+                await this.buildTrade();
+                return;
+            }
+            if (st.status === 'completed') {
+                this.notify.show({ title: 'Tausch abgeschlossen! 🤝', icon: '✅', kind: 'success', duration: 6000 });
+                this.tradeLobbyId = null;
+                this.tradeState = st;
+                await this.buildTrade();
+                return;
+            }
+            if (st.status === 'cancelled') {
+                this.notify.show({ title: 'Lobby beendet', text: 'Escrow wurde zurückgebucht.', icon: '❌', kind: 'info' });
+                this.tradeLobbyId = null;
+                this.tradeState = st;
+                await this.buildTrade();
+                return;
+            }
+            // Only re-render on material changes, so we don't wipe the player's edits.
+            const sig = (x) => x && JSON.stringify({ s: x.status, c: x.you?.confirmed, p: x.partner });
+            const changed = sig(st) !== sig(this.tradeState);
+            this.tradeState = st;
+            if (changed)
+                this.renderLobbyRoom();
+        }
+        catch { /* transient network blip */ }
+    }
     async cloudSync() {
         try {
             await this.game.onlineManager.syncSave(this.game.serialize());
@@ -1218,6 +1478,10 @@ export class UIManager {
         if (tab === 'resources') {
             this.resourceSyncAccum = 0;
             void this.buildResources();
+        }
+        if (tab === 'trade') {
+            this.tradePollAccum = 0;
+            void this.buildTrade();
         }
     }
     applyTheme() {

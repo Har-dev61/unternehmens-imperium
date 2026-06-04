@@ -150,6 +150,42 @@ export class OnlineManager {
     return this.api('/api/resources/build', { method: 'POST', body: { buildingId, quantity }, auth: true });
   }
 
+  // === Trading lobbies (Phase 3) ==========================================
+  private requireServer(): void { if (!this.usingServer) throw new Error('Dafür musst du online angemeldet sein.'); }
+
+  async listLobbies(search = ''): Promise<any[]> {
+    this.requireServer();
+    return (await this.api('/api/lobbies?search=' + encodeURIComponent(search), { auth: true })).lobbies ?? [];
+  }
+  async createLobby(title = ''): Promise<{ id: string }> {
+    this.requireServer();
+    return this.api('/api/lobbies', { method: 'POST', body: { title }, auth: true });
+  }
+  async getLobby(id: string): Promise<any> {
+    this.requireServer();
+    return this.api('/api/lobbies/' + encodeURIComponent(id), { auth: true });
+  }
+  async joinLobby(id: string): Promise<{ id: string }> {
+    this.requireServer();
+    return this.api('/api/lobbies/' + encodeURIComponent(id) + '/join', { method: 'POST', body: {}, auth: true });
+  }
+  async setLobbyOffer(id: string, offer: Record<string, number>): Promise<any> {
+    this.requireServer();
+    return this.api('/api/lobbies/' + encodeURIComponent(id) + '/offer', { method: 'POST', body: { offer }, auth: true });
+  }
+  async confirmTrade(id: string, confirmed: boolean): Promise<any> {
+    this.requireServer();
+    return this.api('/api/lobbies/' + encodeURIComponent(id) + '/confirm', { method: 'POST', body: { confirmed }, auth: true });
+  }
+  async leaveLobby(id: string): Promise<any> {
+    this.requireServer();
+    return this.api('/api/lobbies/' + encodeURIComponent(id) + '/leave', { method: 'POST', body: {}, auth: true });
+  }
+  async tradeHistory(): Promise<any[]> {
+    this.requireServer();
+    return (await this.api('/api/lobbies/history', { auth: true })).history ?? [];
+  }
+
   logout(): void {
     this.token = null;
     localStorage.removeItem(this.storageKey + '-token');

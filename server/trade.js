@@ -16,7 +16,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { queries, tx } from './db.js';
-import { settle, RESOURCE_TYPES } from './resources.js';
+import { RESOURCE_TYPES } from './resources.js';
 
 const MAX_OPEN_PER_USER = Number(process.env.TRADE_MAX_OPEN ?? 3);
 const LOBBY_TTL_MS = Number(process.env.TRADE_LOBBY_TTL_MS ?? 30 * 60 * 1000);
@@ -31,10 +31,10 @@ function credit(userId, deltas) {
 }
 
 /** Refund every escrowed offer in a lobby back to its owner, then clear them. */
-function refundAll(lobbyId, now) {
+function refundAll(lobbyId) {
   for (const o of queries.getOffers(lobbyId)) {
     const esc = JSON.parse(o.escrow);
-    if (Object.keys(esc).length) { settle(o.user_id, now); credit(o.user_id, esc); }
+    if (Object.keys(esc).length) credit(o.user_id, esc);
   }
   queries.deleteLobbyOffers(lobbyId);
 }
@@ -99,7 +99,6 @@ export function setOffer(userId, lobbyId, offer, now = Date.now()) {
     if (n > 0) clean[t] = n;
   }
 
-  settle(userId, now);
   const mine = queries.getOffers(lobbyId).find((o) => o.user_id === userId);
   const escrow = JSON.parse(mine?.escrow ?? '{}');
   const have = bag(userId);
@@ -140,7 +139,6 @@ function executeTrade(lobby, now) {
   const offers = Object.fromEntries(queries.getOffers(lobby.id).map((o) => [o.user_id, JSON.parse(o.escrow)]));
   const aId = lobby.creator_id, bId = lobby.joiner_id;
   const aGave = offers[aId] ?? {}, bGave = offers[bId] ?? {};
-  settle(aId, now); settle(bId, now);
   credit(aId, bGave); // creator receives the joiner's escrow
   credit(bId, aGave); // joiner receives the creator's escrow
   queries.deleteLobbyOffers(lobby.id);
@@ -153,7 +151,6 @@ function executeTrade(lobby, now) {
 export function getLobbyState(userId, lobbyId, now = Date.now()) {
   const lobby = queries.getLobbyView(lobbyId);
   if (!isParticipant(lobby, userId)) return { error: 'Kein Teilnehmer dieser Lobby.' };
-  settle(userId, now);
   const offers = Object.fromEntries(
     queries.getOffers(lobbyId).map((o) => [o.user_id, { offer: JSON.parse(o.escrow), confirmed: !!o.confirmed }])
   );

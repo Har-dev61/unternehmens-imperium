@@ -70,6 +70,18 @@ db.exec(`
     last_tick INTEGER NOT NULL
   );
 
+  /* Per-world collect ENERGY (lazy regen via last_tick) — drop-system overhaul. */
+  CREATE TABLE IF NOT EXISTS player_energy (
+    user_id   INTEGER NOT NULL REFERENCES users(id),
+    world     TEXT NOT NULL,
+    energy    REAL NOT NULL DEFAULT 0,
+    last_tick INTEGER NOT NULL,
+    PRIMARY KEY (user_id, world)
+  );
+
+  /* Small key/value table for one-off migrations/markers. */
+  CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+
   /* --- Trading: lobbies + escrowed offers + history (Phase 3) --- */
   CREATE TABLE IF NOT EXISTS lobbies (
     id         TEXT PRIMARY KEY,
@@ -182,6 +194,13 @@ const stmts = {
     `INSERT INTO player_buildings (user_id, building_id, count) VALUES (?, ?, ?)
      ON CONFLICT(user_id, building_id) DO UPDATE SET count = excluded.count`
   ),
+  energyGet: db.prepare('SELECT energy, last_tick FROM player_energy WHERE user_id = ? AND world = ?'),
+  energySet: db.prepare(
+    `INSERT INTO player_energy (user_id, world, energy, last_tick) VALUES (?, ?, ?, ?)
+     ON CONFLICT(user_id, world) DO UPDATE SET energy = excluded.energy, last_tick = excluded.last_tick`
+  ),
+  metaGet: db.prepare('SELECT value FROM meta WHERE key = ?'),
+  metaSet: db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'),
   // --- Trading (Phase 3) ---
   createLobby: db.prepare('INSERT INTO lobbies (id, creator_id, status, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'),
   getLobby: db.prepare('SELECT * FROM lobbies WHERE id = ?'),
@@ -254,6 +273,10 @@ export const queries = {
   setResource: (userId, type, amount) => stmts.resUpsert.run(userId, type, amount),
   getBuildings: (userId) => stmts.bldAll.all(userId),            // [{ building_id, count }]
   setBuilding: (userId, buildingId, count) => stmts.bldUpsert.run(userId, buildingId, count),
+  getEnergy: (userId, world) => stmts.energyGet.get(userId, world),
+  setEnergy: (userId, world, energy, lastTick) => stmts.energySet.run(userId, world, energy, lastTick),
+  getMeta: (key) => stmts.metaGet.get(key)?.value ?? null,
+  setMeta: (key, value) => stmts.metaSet.run(key, String(value)),
   // --- Trading (Phase 3) ---
   createLobby: (id, creatorId, title) => stmts.createLobby.run(id, creatorId, 'open', title ?? null, Date.now(), Date.now()),
   getLobby: (id) => stmts.getLobby.get(id),
@@ -272,6 +295,14 @@ export const queries = {
   insertTradeHistory: (lobbyId, aId, bId, aGave, bGave) => stmts.insertHistory.run(lobbyId, aId, bId, aGave, bGave, Date.now()),
   getTradeHistory: (userId, limit = 20) => stmts.historyFor.all(userId, userId, limit),
 };
+
+// One-time reset when switching to the rarity-drop system: the old passively
+// accrued resource amounts + buildings are wiped so everyone starts fresh.
+if (queries.getMeta('drops_v2_reset') !== '1') {
+  try { db.exec('DELETE FROM player_resources; DELETE FROM player_buildings; DELETE FROM resource_state;'); }
+  catch (e) { console.error('[db] drop-system reset failed:', e.message); }
+  queries.setMeta('drops_v2_reset', '1');
+}
 
 /** Seed a handful of AI rivals once, so a fresh leaderboard isn't empty. */
 export function seedRivalsIfEmpty() {

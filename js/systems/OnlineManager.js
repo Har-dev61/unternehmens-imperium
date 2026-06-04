@@ -122,11 +122,17 @@ export class OnlineManager {
             throw new Error('Dafür musst du online angemeldet sein.');
         return this.api('/api/resources', { auth: true });
     }
-    /** Buy a resource building (paid with resources; validated server-side). */
-    async buildResource(buildingId, quantity = 1) {
+    /** Active collect: one server-side rarity roll in a world (costs energy). */
+    async rollResource(world) {
         if (!this.usingServer)
             throw new Error('Dafür musst du online angemeldet sein.');
-        return this.api('/api/resources/build', { method: 'POST', body: { buildingId, quantity }, auth: true });
+        return this.api('/api/resources/roll', { method: 'POST', body: { world }, auth: true });
+    }
+    /** Buy a booster (paid with resources; raises a world's energy cap/regen). */
+    async buildResource(buildingId) {
+        if (!this.usingServer)
+            throw new Error('Dafür musst du online angemeldet sein.');
+        return this.api('/api/resources/build', { method: 'POST', body: { buildingId }, auth: true });
     }
     // === Trading lobbies (Phase 3) ==========================================
     requireServer() { if (!this.usingServer)

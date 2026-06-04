@@ -1,7 +1,7 @@
 /**
- * Tests for the server-authoritative resource economy (Phase 2): lazy
- * settlement (base-rate accrual + 8 h cap), resource-paid building purchases
- * (deduction, rate increase, affordability), and the HTTP endpoints.
+ * Tests for the rarity-based active drop system (resources overhaul):
+ * per-world energy (regen + cap), crypto-secure rolls, rough rarity
+ * distribution, boosters, and the anti-burst rate limit.
  *
  *   Run:  node server/test-resources.mjs   (Node ≥ 22)
  */
@@ -9,99 +9,87 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync } from 'node:fs';
 
-const PORT = 3988;
 const DB = join(tmpdir(), `imperium-rtest-${Date.now()}.db`);
-process.env.PORT = String(PORT);
-process.env.HOST = '127.0.0.1';
 process.env.DB_PATH = DB;
-process.env.AUTH_RATE_LIMIT = '100000';
-process.env.API_RATE_LIMIT = '100000';
-process.env.RESOURCE_OFFLINE_CAP_SECONDS = String(8 * 3600);
 
-await import('./server.js');                       // starts listening + opens the DB
-const { queries, tx } = await import('./db.js');   // same singletons as the server
-const resources = await import('./resources.js');
+const { queries } = await import('./db.js');
+const R = await import('./resources.js');
 
-const base = `http://127.0.0.1:${PORT}`;
 let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) pass++; else { fail++; console.error('  ✗ ' + msg); } };
-const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
-const api = async (path, { method = 'GET', body, token } = {}) => {
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) headers.Authorization = 'Bearer ' + token;
-  const res = await fetch(base + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
-  let json = {}; try { json = await res.json(); } catch {}
-  return { status: res.status, json };
-};
-for (let i = 0; i < 50; i++) { try { if ((await fetch(base + '/api/health')).ok) break; } catch {} await new Promise((r) => setTimeout(r, 100)); }
-
-const mkUser = (name) => queries.createUser({ username: name, token: 'tok-' + name, isGuest: 1 }).id;
-const amounts = (uid) => Object.fromEntries(queries.getResources(uid).map((r) => [r.type, r.amount]));
+const near = (a, b, eps) => Math.abs(a - b) <= eps;
+const mkUser = (n) => queries.createUser({ username: n, token: 'tk-' + n, isGuest: 1 }).id;
 
 try {
-  const T0 = 1_000_000_000_000;
+  const T = 1_000_000_000_000;
 
-  // --- A) Base-rate accrual over 1 h ---
-  const u1 = mkUser('settle1');
-  tx(() => resources.settle(u1, T0));                 // first contact → starts the clock, no pay
-  ok(Object.keys(amounts(u1)).length === 0, 'first settle does not retro-pay');
-  tx(() => resources.settle(u1, T0 + 3600_000));      // +1 h
-  const a1 = amounts(u1);
-  ok(near(a1.wood, 0.5 * 3600, 1e-3), `wood accrues at base rate (got ${a1.wood})`);
-  ok(near(a1.stone, 0.3 * 3600, 1e-3), `stone accrues at base rate (got ${a1.stone})`);
+  // --- Config ---
+  const cfg = R.config();
+  ok(cfg.rarities.length === 6, 'config has 6 rarity tiers');
+  ok(cfg.worlds.length === 9 && cfg.worlds.every((w) => w.resources.length === 6), 'each of 9 worlds has 6 resources');
+  ok(cfg.rarities.every((r) => /^#/.test(r.color)), 'every rarity has a colour');
+  ok(cfg.boosters.length === 9, 'one booster per world');
 
-  // --- B) Offline cap at 8 h ---
-  const u2 = mkUser('settle2');
-  tx(() => resources.settle(u2, T0));
-  tx(() => resources.settle(u2, T0 + 100 * 3600_000)); // 100 h away → capped to 8 h
-  ok(near(amounts(u2).wood, 0.5 * 8 * 3600, 1e-3), `offline production capped at 8 h (got ${amounts(u2).wood})`);
+  // --- Energy starts full, a roll costs 1 ---
+  const u1 = mkUser('roller');
+  const snap0 = R.snapshot(u1, T);
+  ok(near(snap0.energy.local.energy, R.ENERGY.max, 1e-6), 'energy starts at max on first contact');
+  const r1 = R.roll(u1, 'local', T);
+  ok(r1.ok && near(r1.energy, R.ENERGY.max - 1, 1e-6), 'a roll costs 1 energy');
+  ok(r1.drop && r1.drop.type === `local_${r1.drop.rarity}`, 'drop type matches its world + rarity');
+  ok(r1.drop.qty >= 1, 'drop quantity is at least 1');
+  ok((R.snapshot(u1, T).resources[r1.drop.type] ?? 0) >= r1.drop.qty, 'drop landed in the inventory');
+  ok(R.roll(u1, 'spaco', T).error, 'rolling an unknown world is rejected');
 
-  // --- C) Purchase deducts resources, adds a building, raises the rate ---
-  const u3 = mkUser('buyer');
-  tx(() => resources.settle(u3, T0));
-  tx(() => resources.settle(u3, T0 + 3600_000));       // ~1800 wood
-  const woodBefore = amounts(u3).wood;
-  const r = tx(() => resources.purchase(u3, 'sawmill', 1, T0 + 3600_000));
-  ok(r.ok, 'sawmill purchase succeeds when affordable');
-  ok(near(amounts(u3).wood, woodBefore - 20, 1e-3), 'sawmill cost (20 wood) deducted');
-  const snap = tx(() => resources.snapshot(u3, T0 + 3600_000));
-  ok(snap.buildings.sawmill === 1, 'sawmill building count is 1');
-  ok(near(snap.rates.wood, 0.5 + 1.0, 1e-9), `wood rate rises with the building (got ${snap.rates.wood})`);
+  // --- Energy depletes, then refuses, then regenerates ---
+  const u2 = mkUser('drainer');
+  for (let i = 0; i < R.ENERGY.max; i++) R.roll(u2, 'tech', T);     // drain to 0
+  ok(R.roll(u2, 'tech', T).error === 'Nicht genug Energie.', 'roll refused when energy is 0');
+  const regen = R.roll(u2, 'tech', T + 72_000);                     // +72 s ≈ +2 energy
+  ok(regen.ok, 'roll works again after energy regenerates');
 
-  // second sawmill costs more (geometric 20 × 1.15)
-  const r2 = tx(() => resources.purchase(u3, 'sawmill', 1, T0 + 3600_000));
-  ok(r2.ok, 'second sawmill purchase succeeds');
-  ok(tx(() => resources.snapshot(u3, T0 + 3600_000)).buildings.sawmill === 2, 'sawmill count is 2');
+  // --- Rough rarity distribution over many CSPRNG rolls ---
+  const u3 = mkUser('stats');
+  const counts = {}; let total = 0; let now = T; let badType = 0;
+  for (let batch = 0; batch < 120; batch++) {
+    now += 9 * 3600 * 1000; // > offline cap → energy back to full each batch
+    for (let i = 0; i < R.ENERGY.max; i++) {
+      const r = R.roll(u3, 'finance', now);
+      if (!r.ok) continue;
+      counts[r.drop.rarity] = (counts[r.drop.rarity] ?? 0) + 1; total++;
+      if (r.drop.type !== `finance_${r.drop.rarity}`) badType++;
+    }
+  }
+  ok(total > 5000, `enough rolls for statistics (${total})`);
+  ok(badType === 0, 'every drop is a valid finance resource of its rolled rarity');
+  ok(Object.keys(counts).length === 6, 'all six rarities occur');
+  ok(counts.common / total > 0.50 && counts.common / total < 0.66, `common ~58% (got ${(100 * counts.common / total).toFixed(1)}%)`);
+  ok(counts.mythic / total > 0.002 && counts.mythic / total < 0.025, `mythic ~1% (got ${(100 * counts.mythic / total).toFixed(2)}%)`);
 
-  // --- D) Can't afford / unknown building ---
-  const u4 = mkUser('broke');
-  tx(() => resources.settle(u4, T0));                  // ~0 resources
-  ok(tx(() => resources.purchase(u4, 'foundry', 1, T0)).error, 'unaffordable purchase rejected');
-  ok(tx(() => resources.purchase(u4, 'does_not_exist', 1, T0)).error, 'unknown building rejected');
-  ok(queries.getBuildings(u4).length === 0, 'no building added on a failed purchase');
+  // --- Boosters: bought with resources, raise the energy cap ---
+  const u4 = mkUser('builder');
+  queries.setResource(u4, 'local_common', 1000);
+  queries.setResource(u4, 'local_uncommon', 1000);
+  ok(R.snapshot(u4, T).energy.local.max === R.ENERGY.max, 'energy cap is base before any booster');
+  ok(R.buyBooster(u4, 'boost_local', T).ok, 'booster purchase succeeds when affordable');
+  ok(R.snapshot(u4, T).energy.local.max === R.ENERGY.max + R.BOOSTERS[0].effect.energyMax, 'booster raised the energy cap');
+  ok((R.snapshot(u4, T).buildings.boost_local ?? 0) === 1, 'booster level is 1');
+  const u5 = mkUser('poor');
+  ok(R.buyBooster(u5, 'boost_local', T).error, 'booster rejected without resources');
+  ok(R.buyBooster(u4, 'nope', T).error, 'unknown booster rejected');
 
-  // --- E) HTTP endpoints (auth + validation) ---
-  const cfg = await api('/api/resources/config');
-  ok(cfg.status === 200 && Array.isArray(cfg.json.worlds) && cfg.json.worlds.length === 9, 'config lists 9 worlds');
-  ok(cfg.json.capSeconds === 8 * 3600, 'config exposes the 8 h cap');
+  // --- Anti-burst token bucket ---
+  const uid = 9999;
+  let allowed = 0;
+  for (let i = 0; i < 20; i++) if (R.rollAllowed(uid, T)) allowed++;   // same instant
+  ok(allowed === R.ROLL_LIMIT.burst, `burst capped at ${R.ROLL_LIMIT.burst} (got ${allowed})`);
+  ok(!R.rollAllowed(uid, T), 'further rolls in the same instant are blocked');
+  let after = 0;
+  for (let i = 0; i < 20; i++) if (R.rollAllowed(uid, T + 1000)) after++; // +1 s → +ratePerSec tokens
+  ok(after === R.ROLL_LIMIT.ratePerSec, `~${R.ROLL_LIMIT.ratePerSec} tokens refilled after 1 s (got ${after})`);
 
-  ok((await api('/api/resources')).status === 401, 'resources require auth');
-
-  const reg = await api('/api/auth/register', { method: 'POST', body: { username: 'rich', email: 'rich@x.com', password: 'sup3rsecret' } });
-  const token = reg.json.token;
-  const uid = queries.getUserByName('rich').id;
-
-  let g = await api('/api/resources', { token });
-  ok(g.status === 200 && typeof g.json.resources.wood === 'number', 'GET /api/resources returns stocks');
-
-  // Not enough yet (fresh account) → 400
-  ok((await api('/api/resources/build', { method: 'POST', token, body: { buildingId: 'sawmill' } })).status === 400, 'build rejected without resources');
-
-  // Seed wood server-side, then the HTTP build should succeed and deduct.
-  tx(() => { resources.settle(uid); queries.setResource(uid, 'wood', 1000); });
-  const built = await api('/api/resources/build', { method: 'POST', token, body: { buildingId: 'sawmill', quantity: 1 } });
-  ok(built.status === 200 && built.json.buildings.sawmill === 1, 'HTTP build succeeds and reports the building');
-  ok(built.json.resources.wood < 1000, 'HTTP build deducted resources');
+  // --- The drop-system reset marker is set ---
+  ok(queries.getMeta('drops_v2_reset') === '1', 'one-time reset marker recorded');
 } catch (err) {
   fail++; console.error('  ✗ unexpected error:', err);
 } finally {

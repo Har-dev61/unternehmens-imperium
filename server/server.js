@@ -331,20 +331,30 @@ function currentEvents() {
 
 app.get('/api/events', (_req, res) => res.json({ events: currentEvents() }));
 
-// --- Resources (Phase 2, server-authoritative) -----------------------------
-// Static registry (which world produces what, building costs/rates).
+// --- Resources: rarity-based active drops (server-authoritative) -----------
+// Static registry (rarities, colors, world resources, boosters, energy config).
 app.get('/api/resources/config', (_req, res) => res.json(resources.config()));
 
-// The player's settled stocks + current rates + owned buildings.
+// The player's inventory + per-world energy + owned boosters.
 app.get('/api/resources', requireAuth, (req, res) => {
   res.json(tx(() => resources.snapshot(req.user.id)));
 });
 
-// Buy a resource building (paid with resources; validated server-side).
-app.post('/api/resources/build', requireAuth, (req, res) => {
-  const { buildingId, quantity } = req.body ?? {};
+// Active collect: ONE crypto-secure roll, costs 1 energy. Hard rate-limited.
+app.post('/api/resources/roll', requireAuth, (req, res) => {
+  if (!resources.rollAllowed(req.user.id)) return res.status(429).json({ error: 'Zu viele Versuche – kurz langsamer.' });
   const result = tx(() => {
-    const r = resources.purchase(req.user.id, String(buildingId ?? ''), quantity);
+    const r = resources.roll(req.user.id, String(req.body?.world ?? ''));
+    return r.error ? r : { ...r, ...resources.snapshot(req.user.id) };
+  });
+  if (result.error) return res.status(400).json(result);
+  res.json(result);
+});
+
+// Buy a booster with resources (raises a world's energy cap / regen).
+app.post('/api/resources/build', requireAuth, (req, res) => {
+  const result = tx(() => {
+    const r = resources.buyBooster(req.user.id, String(req.body?.buildingId ?? ''));
     return r.error ? r : { ok: true, ...resources.snapshot(req.user.id) };
   });
   if (result.error) return res.status(400).json({ error: result.error });

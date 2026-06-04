@@ -1,171 +1,177 @@
 /**
- * Server-authoritative resource economy (Phase 2).
+ * Server-authoritative, rarity-based RESOURCE DROPS (overhaul of Phase 2).
  *
- * Design (per the agreed decisions):
- *  - Lazy settlement: we store owned buildings, a per-player lastTick and the
- *    current stock per resource type. On every relevant event we accrue
- *    `stock += rate × min(elapsed, CAP)` and reset the tick. Rates are derived
- *    ONLY from server-owned buildings — never trusted from the client.
- *  - Resources are global per player (one shared bag), but every resource TYPE
- *    is produced by exactly one world. Worlds dock in purely via their rates.
- *  - Buildings are bought with RESOURCES (cross-resource costs) — a closed,
- *    trustworthy economy independent of the client-authoritative money.
- *  - Each world has a small base rate (> 0), so resources trickle in from the
- *    start and the first buildings are always reachable without clicks.
- *  - Offline progress is capped (default 8 h); the cap is config-driven.
+ * Model (per the agreed decisions):
+ *  - No more passive accumulation. The player actively "collects" in a world;
+ *    each collect is ONE server-side roll that costs 1 ENERGY.
+ *  - Energy is a per-world pool that regenerates slowly (lazy, timestamp-based).
+ *    A hard token-bucket rate-limit additionally blocks scripted bursts.
+ *  - Every roll uses a cryptographically secure RNG (node:crypto.randomInt):
+ *    first a RARITY by weight, then the world's resource of that rarity, then a
+ *    tier-dependent quantity. The client only learns the result — it cannot
+ *    predict, repeat or influence the roll.
+ *  - Resources are global per player (one bag); each type belongs to one world.
+ *  - Buildings are repurposed as BOOSTERS (bought with resources) that raise a
+ *    world's energy cap / regen.
  *
- * Adding a world = add entries to WORLDS + BUILDINGS. No settlement changes.
+ * Everything balance-relevant lives in the config blocks below; a new world is
+ * just another WORLD_RES entry + booster.
  */
+import { randomInt } from 'node:crypto';
 import { queries } from './db.js';
 
-/** Offline accrual cap in seconds (config-driven; later unlockable as an upgrade). */
-export const CAP_SECONDS = Number(process.env.RESOURCE_OFFLINE_CAP_SECONDS ?? 8 * 3600);
+// --- Energy + anti-spam (config) -------------------------------------------
+export const ENERGY = {
+  max: Number(process.env.ROLL_ENERGY_MAX ?? 50),            // base cap per world
+  regenPerSec: 1 / Number(process.env.ROLL_ENERGY_REGEN_SECONDS ?? 36), // +1 every 36 s
+  offlineCapSeconds: Number(process.env.ROLL_ENERGY_OFFLINE_CAP ?? 8 * 3600),
+  rollCost: 1,
+};
+export const ROLL_LIMIT = { ratePerSec: 5, burst: 10 }; // hard token-bucket per player
 
-/** World → resource types it produces, with a small always-on base rate (/s). */
-export const WORLDS = [
-  { world: 'local',     name: 'Lokaler Markt',        resources: [
-    { type: 'wood',     name: 'Holz',          icon: '🪵', baseRate: 0.50 },
-    { type: 'stone',    name: 'Stein',         icon: '🪨', baseRate: 0.30 }] },
-  { world: 'national',  name: 'Nationale Wirtschaft', resources: [
-    { type: 'iron',     name: 'Eisen',         icon: '⛓️', baseRate: 0.08 },
-    { type: 'coal',     name: 'Kohle',         icon: '⚫', baseRate: 0.08 }] },
-  { world: 'global',    name: 'Globaler Markt',       resources: [
-    { type: 'oil',      name: 'Öl',            icon: '🛢️', baseRate: 0.04 },
-    { type: 'goods',    name: 'Waren',         icon: '📦', baseRate: 0.04 }] },
-  { world: 'tech',      name: 'Tech-Welt',            resources: [
-    { type: 'silicon',  name: 'Silizium',      icon: '🔌', baseRate: 0.02 },
-    { type: 'data',     name: 'Daten',         icon: '💾', baseRate: 0.03 }] },
-  { world: 'finance',   name: 'Finanzwelt',           resources: [
-    { type: 'gold',     name: 'Gold',          icon: '🥇', baseRate: 0.010 },
-    { type: 'credit',   name: 'Kredit',        icon: '💳', baseRate: 0.020 }] },
-  { world: 'space',     name: 'Weltraumkolonien',     resources: [
-    { type: 'titanium', name: 'Titan',         icon: '🛰️', baseRate: 0.008 },
-    { type: 'helium3',  name: 'Helium-3',      icon: '⚛️', baseRate: 0.005 }] },
-  { world: 'metaverse', name: 'Metaverse',            resources: [
-    { type: 'pixels',   name: 'Pixel',         icon: '🟦', baseRate: 0.020 },
-    { type: 'tokens',   name: 'Token',         icon: '🪙', baseRate: 0.010 }] },
-  { world: 'biotech',   name: 'Biotech-Welt',         resources: [
-    { type: 'biomass',  name: 'Biomasse',      icon: '🌿', baseRate: 0.010 },
-    { type: 'genes',    name: 'Gen-Daten',     icon: '🧬', baseRate: 0.006 }] },
-  { world: 'ai',        name: 'KI-Singularität',      resources: [
-    { type: 'compute',  name: 'Rechenleistung', icon: '🖥️', baseRate: 0.004 },
-    { type: 'models',   name: 'Modelle',        icon: '🧠', baseRate: 0.002 }] },
+// --- Rarity tiers (weights are relative; normalized for display) ------------
+export const RARITIES = [
+  { id: 'common',    name: 'Häufig',       color: '#9ca3af', weight: 60, qty: [1, 3] },
+  { id: 'uncommon',  name: 'Ungewöhnlich', color: '#4ade80', weight: 25, qty: [1, 2] },
+  { id: 'rare',      name: 'Selten',       color: '#3b82f6', weight: 10, qty: [1, 1] },
+  { id: 'epic',      name: 'Episch',       color: '#a855f7', weight: 5,  qty: [1, 1] },
+  { id: 'legendary', name: 'Legendär',     color: '#f59e0b', weight: 2,  qty: [1, 1] },
+  { id: 'mythic',    name: 'Mythisch',     color: '#ef4444', weight: 1,  qty: [1, 1] },
 ];
+const RARITY_IDS = RARITIES.map((r) => r.id);
+const RARITY_BY_ID = Object.fromEntries(RARITIES.map((r) => [r.id, r]));
+const WEIGHT_TOTAL = RARITIES.reduce((s, r) => s + r.weight, 0);
 
-/** Buildings: produce one resource at `rate`/unit; cost RESOURCES (geometric). */
-export const BUILDINGS = [
-  { id: 'sawmill',     world: 'local',     name: 'Sägewerk',       produces: 'wood',     rate: 1.00, growth: 1.15, cost: { wood: 20 } },
-  { id: 'quarry',      world: 'local',     name: 'Steinbruch',     produces: 'stone',    rate: 0.70, growth: 1.15, cost: { stone: 25 } },
-  { id: 'foundry',     world: 'national',  name: 'Eisenhütte',     produces: 'iron',     rate: 0.50, growth: 1.16, cost: { wood: 60, stone: 45 } },
-  { id: 'coal_mine',   world: 'national',  name: 'Kohlemine',      produces: 'coal',     rate: 0.50, growth: 1.16, cost: { wood: 50, stone: 55 } },
-  { id: 'refinery',    world: 'global',    name: 'Raffinerie',     produces: 'oil',      rate: 0.40, growth: 1.17, cost: { iron: 40, coal: 40 } },
-  { id: 'factory',     world: 'global',    name: 'Fabrik',         produces: 'goods',    rate: 0.45, growth: 1.17, cost: { iron: 35, coal: 45 } },
-  { id: 'fab',         world: 'tech',      name: 'Chip-Fab',       produces: 'silicon',  rate: 0.35, growth: 1.18, cost: { oil: 30, goods: 35 } },
-  { id: 'datacenter',  world: 'tech',      name: 'Rechenzentrum',  produces: 'data',     rate: 0.50, growth: 1.18, cost: { oil: 40, goods: 30 } },
-  { id: 'vault',       world: 'finance',   name: 'Tresor',         produces: 'gold',     rate: 0.20, growth: 1.19, cost: { silicon: 30, data: 40 } },
-  { id: 'bank',        world: 'finance',   name: 'Bank',           produces: 'credit',   rate: 0.40, growth: 1.19, cost: { silicon: 40, data: 35 } },
-  { id: 'ti_refinery', world: 'space',     name: 'Titan-Raffinerie', produces: 'titanium', rate: 0.18, growth: 1.20, cost: { gold: 25, credit: 40 } },
-  { id: 'collector',   world: 'space',     name: 'He-3-Kollektor', produces: 'helium3',  rate: 0.12, growth: 1.20, cost: { gold: 30, credit: 45 } },
-  { id: 'renderfarm',  world: 'metaverse', name: 'Render-Farm',    produces: 'pixels',   rate: 0.40, growth: 1.20, cost: { titanium: 20, helium3: 25 } },
-  { id: 'mint',        world: 'metaverse', name: 'Mint-Werk',      produces: 'tokens',   rate: 0.25, growth: 1.20, cost: { titanium: 25, helium3: 20 } },
-  { id: 'biolab',      world: 'biotech',   name: 'Biolabor',       produces: 'biomass',  rate: 0.30, growth: 1.20, cost: { pixels: 30, tokens: 35 } },
-  { id: 'sequencer',   world: 'biotech',   name: 'Sequenzierer',   produces: 'genes',    rate: 0.20, growth: 1.20, cost: { pixels: 35, tokens: 30 } },
-  { id: 'cluster',     world: 'ai',        name: 'GPU-Cluster',    produces: 'compute',  rate: 0.25, growth: 1.21, cost: { biomass: 30, genes: 40 } },
-  { id: 'trainer',     world: 'ai',        name: 'Trainings-Werk', produces: 'models',   rate: 0.15, growth: 1.21, cost: { biomass: 40, genes: 35 } },
-];
+// --- Per-world resources: six entries [name, icon], one per rarity tier ------
+const WORLD_DEFS = {
+  local:     { name: 'Lokaler Markt',        res: [['Holz', '🪵'], ['Harz', '🟩'], ['Bernstein', '🟡'], ['Edelholz', '🟪'], ['Weltbaum-Span', '🌟'], ['Urholz', '🔥']] },
+  national:  { name: 'Nationale Wirtschaft', res: [['Eisen', '⛓️'], ['Kohle', '⚫'], ['Stahl', '🔩'], ['Titanstahl', '🛠️'], ['Meteoreisen', '☄️'], ['Urerz', '🌋']] },
+  global:    { name: 'Globaler Markt',        res: [['Öl', '🛢️'], ['Baumwolle', '🧵'], ['Gewürze', '🌶️'], ['Seide', '🧣'], ['Perlen', '⚪'], ['Drachenöl', '🐉']] },
+  tech:      { name: 'Tech-Welt',             res: [['Silizium', '🔌'], ['Kupfer', '🟧'], ['Platine', '💾'], ['Glasfaser', '🪢'], ['Quantenchip', '🔬'], ['Singularitäts-Kern', '🌀']] },
+  finance:   { name: 'Finanzwelt',            res: [['Münzen', '🪙'], ['Silber', '🥈'], ['Gold', '🥇'], ['Diamant', '💎'], ['Platin', '⬜'], ['Urkristall', '🔮']] },
+  space:     { name: 'Weltraumkolonien',      res: [['Eis', '🧊'], ['Titan', '🛰️'], ['Helium-3', '⚛️'], ['Iridium', '✨'], ['Antimaterie', '🌌'], ['Sternenstaub', '⭐']] },
+  metaverse: { name: 'Metaverse',             res: [['Pixel', '🟦'], ['Token', '🎫'], ['Daten', '📀'], ['NFT', '🖼️'], ['Krypto-Schlüssel', '🔑'], ['Genesis-Block', '🧱']] },
+  biotech:   { name: 'Biotech-Welt',          res: [['Zellen', '🦠'], ['Biomasse', '🌿'], ['Enzyme', '🧪'], ['DNA', '🧬'], ['Stammzellen', '💉'], ['Unsterblichkeits-Serum', '⏳']] },
+  ai:        { name: 'KI-Singularität',       res: [['Datensatz', '📊'], ['Rechenzeit', '🖥️'], ['Modell', '🧠'], ['Neuralnetz', '🕸️'], ['AGI-Kern', '🤖'], ['Singularität', '🌟']] },
+};
+
+/** WORLDS: [{ world, name, resources:[{type,name,icon,rarity}] }] (derived). */
+export const WORLDS = Object.entries(WORLD_DEFS).map(([world, def]) => ({
+  world, name: def.name,
+  resources: def.res.map(([name, icon], i) => ({ type: `${world}_${RARITY_IDS[i]}`, name, icon, rarity: RARITY_IDS[i] })),
+}));
+
+/** One booster per world: bought with that world's common+uncommon drops; lifts energy. */
+export const BOOSTERS = Object.keys(WORLD_DEFS).map((world) => ({
+  id: `boost_${world}`, world, name: 'Sammelposten',
+  cost: { [`${world}_common`]: 25, [`${world}_uncommon`]: 15 }, growth: 1.6,
+  effect: { energyMax: 10, regenPerSec: 0.01 }, // per owned level
+}));
 
 // --- Derived lookups -------------------------------------------------------
-const RESOURCE_DEFS = WORLDS.flatMap((w) => w.resources.map((r) => ({ ...r, world: w.world })));
-export const RESOURCE_TYPES = RESOURCE_DEFS.map((r) => r.type);
-const BASE_RATES = Object.fromEntries(RESOURCE_DEFS.map((r) => [r.type, r.baseRate]));
-const RESOURCE_NAMES = Object.fromEntries(RESOURCE_DEFS.map((r) => [r.type, r.name]));
-const BUILDING_MAP = Object.fromEntries(BUILDINGS.map((b) => [b.id, b]));
+const RES_BY_WORLD = Object.fromEntries(WORLDS.map((w) => [w.world, Object.fromEntries(w.resources.map((r) => [r.rarity, r]))]));
+export const RESOURCE_TYPES = WORLDS.flatMap((w) => w.resources.map((r) => r.type));
+const RES_NAME = Object.fromEntries(WORLDS.flatMap((w) => w.resources.map((r) => [r.type, r.name])));
+const WORLD_IDS = new Set(Object.keys(WORLD_DEFS));
+const BOOSTER_BY_ID = Object.fromEntries(BOOSTERS.map((b) => [b.id, b]));
 
 const amountMap = (rows) => Object.fromEntries(rows.map((r) => [r.type, r.amount]));
 
-/** Current production rate per resource type for a player (base + buildings). */
-function ratesFor(userId) {
-  const rates = { ...BASE_RATES };
-  for (const b of queries.getBuildings(userId)) {
-    const def = BUILDING_MAP[b.building_id];
-    if (def) rates[def.produces] = (rates[def.produces] ?? 0) + def.rate * b.count;
-  }
-  return rates;
+// --- Energy (per world, lazy regen) ----------------------------------------
+function boostLevels(userId, world) {
+  const id = `boost_${world}`;
+  return queries.getBuildings(userId).find((b) => b.building_id === id)?.count ?? 0;
+}
+function energyParams(userId, world) {
+  const lv = boostLevels(userId, world);
+  return { max: ENERGY.max + lv * BOOSTERS[0].effect.energyMax, regenPerSec: ENERGY.regenPerSec + lv * BOOSTERS[0].effect.regenPerSec };
 }
 
-/** Total cost to buy `qty` units of `def`, starting from `fromCount` (geometric). */
-function totalCost(def, fromCount, qty) {
-  const g = def.growth ?? 1.15;
-  const factor = g === 1 ? qty : Math.pow(g, fromCount) * (Math.pow(g, qty) - 1) / (g - 1);
-  const cost = {};
-  for (const [type, base] of Object.entries(def.cost)) cost[type] = base * factor;
-  return cost;
+/** Current energy for a world after lazy regeneration (writes the new value). */
+function settleEnergy(userId, world, now = Date.now()) {
+  const { max, regenPerSec } = energyParams(userId, world);
+  const row = queries.getEnergy(userId, world);
+  if (!row) { queries.setEnergy(userId, world, max, now); return { energy: max, max, regenPerSec }; } // start full
+  const elapsed = Math.min((now - row.last_tick) / 1000, ENERGY.offlineCapSeconds);
+  const energy = Math.min(max, row.energy + Math.max(0, elapsed) * regenPerSec);
+  queries.setEnergy(userId, world, energy, now);
+  return { energy, max, regenPerSec };
 }
 
-function buildingCount(userId, buildingId) {
-  return queries.getBuildings(userId).find((b) => b.building_id === buildingId)?.count ?? 0;
+// --- Anti-burst token bucket (per player, in-memory) -----------------------
+const buckets = new Map();
+export function rollAllowed(userId, now = Date.now()) {
+  const b = buckets.get(userId) ?? { tokens: ROLL_LIMIT.burst, last: now };
+  b.tokens = Math.min(ROLL_LIMIT.burst, b.tokens + ((now - b.last) / 1000) * ROLL_LIMIT.ratePerSec);
+  b.last = now;
+  if (b.tokens < 1) { buckets.set(userId, b); return false; }
+  b.tokens -= 1; buckets.set(userId, b);
+  return true;
 }
 
-/**
- * Accrue production up to `now` (capped). MUST run inside a transaction at the
- * call site (see db.tx). First contact just starts the clock (no retro-pay).
- */
-export function settle(userId, now = Date.now()) {
-  const lastTick = queries.getResourceTick(userId);
-  if (lastTick == null) { queries.setResourceTick(userId, now); return; }
-  let elapsedMs = now - lastTick;
-  if (elapsedMs <= 0) return;
-  elapsedMs = Math.min(elapsedMs, CAP_SECONDS * 1000); // offline cap (excess discarded)
-  const seconds = elapsedMs / 1000;
-  const rates = ratesFor(userId);
+// --- Rolling (CSPRNG) ------------------------------------------------------
+function rollRarity() {
+  let r = randomInt(0, WEIGHT_TOTAL); // crypto-secure, uniform in [0, total)
+  for (const tier of RARITIES) { if (r < tier.weight) return tier; r -= tier.weight; }
+  return RARITIES[0];
+}
+
+/** Spend 1 energy and roll once in `world`. Returns the drop or an {error}. */
+export function roll(userId, world, now = Date.now()) {
+  if (!WORLD_IDS.has(world)) return { error: 'Unbekannte Welt.' };
+  const e = settleEnergy(userId, world, now);
+  if (e.energy < ENERGY.rollCost) return { error: 'Nicht genug Energie.', energy: e.energy, max: e.max };
+  queries.setEnergy(userId, world, e.energy - ENERGY.rollCost, now);
+
+  const tier = rollRarity();
+  const res = RES_BY_WORLD[world][tier.id];
+  const qty = randomInt(tier.qty[0], tier.qty[1] + 1);
   const have = amountMap(queries.getResources(userId));
-  for (const type of RESOURCE_TYPES) {
-    const add = (rates[type] ?? 0) * seconds;
-    if (add > 0) queries.setResource(userId, type, (have[type] ?? 0) + add);
-  }
-  queries.setResourceTick(userId, now);
+  queries.setResource(userId, res.type, (have[res.type] ?? 0) + qty);
+
+  return {
+    ok: true,
+    drop: { type: res.type, name: res.name, icon: res.icon, rarity: tier.id, color: tier.color, qty },
+    energy: e.energy - ENERGY.rollCost, max: e.max,
+  };
 }
 
-/** Buy `qty` of a building, paying with resources. Returns {ok} or {error}. */
-export function purchase(userId, buildingId, qty = 1, now = Date.now()) {
-  const def = BUILDING_MAP[buildingId];
-  if (!def) return { error: 'Unbekanntes Gebäude.' };
-  qty = Math.max(1, Math.min(1000, Math.floor(Number(qty) || 1)));
-  settle(userId, now); // accrue before spending so the player can't be short-changed
-  const owned = buildingCount(userId, buildingId);
-  const cost = totalCost(def, owned, qty);
+/** Buy a booster with resources (geometric cost). Returns {ok} or {error}. */
+export function buyBooster(userId, buildingId, now = Date.now()) {
+  const def = BOOSTER_BY_ID[buildingId];
+  if (!def) return { error: 'Unbekannter Booster.' };
+  const owned = boostLevels(userId, def.world);
+  const factor = Math.pow(def.growth, owned);
+  const cost = Object.fromEntries(Object.entries(def.cost).map(([t, base]) => [t, base * factor]));
   const have = amountMap(queries.getResources(userId));
-  for (const [type, amt] of Object.entries(cost)) {
-    if ((have[type] ?? 0) + 1e-9 < amt) return { error: `Nicht genug ${RESOURCE_NAMES[type] ?? type}.` };
-  }
-  for (const [type, amt] of Object.entries(cost)) {
-    queries.setResource(userId, type, (have[type] ?? 0) - amt);
-  }
-  queries.setBuilding(userId, buildingId, owned + qty);
+  for (const [t, amt] of Object.entries(cost)) if ((have[t] ?? 0) + 1e-9 < amt) return { error: `Nicht genug ${RES_NAME[t] ?? t}.` };
+  for (const [t, amt] of Object.entries(cost)) queries.setResource(userId, t, (have[t] ?? 0) - amt);
+  queries.setBuilding(userId, buildingId, owned + 1);
+  settleEnergy(userId, def.world, now); // re-baseline energy with the new cap/regen
   return { ok: true };
 }
 
-/** Settle, then return the player's full resource snapshot (for the API). */
+/** Player snapshot: inventory + per-world energy + owned boosters. */
 export function snapshot(userId, now = Date.now()) {
-  settle(userId, now);
   const have = amountMap(queries.getResources(userId));
-  const rates = ratesFor(userId);
-  const buildings = {};
-  for (const b of queries.getBuildings(userId)) buildings[b.building_id] = b.count;
   const resources = {};
   for (const t of RESOURCE_TYPES) resources[t] = have[t] ?? 0;
-  return { resources, rates, buildings, capSeconds: CAP_SECONDS };
+  const buildings = {};
+  for (const b of queries.getBuildings(userId)) buildings[b.building_id] = b.count;
+  const energy = {};
+  for (const w of Object.keys(WORLD_DEFS)) energy[w] = settleEnergy(userId, w, now);
+  return { resources, energy, buildings };
 }
 
-/** Next-unit (and ×qty) cost for a building given the player's current count. */
-export function quote(userId, buildingId, qty = 1) {
-  const def = BUILDING_MAP[buildingId];
+/** Next-level booster cost for the UI. */
+export function boosterCost(userId, buildingId) {
+  const def = BOOSTER_BY_ID[buildingId];
   if (!def) return null;
-  qty = Math.max(1, Math.min(1000, Math.floor(Number(qty) || 1)));
-  return { buildingId, qty, cost: totalCost(def, buildingCount(userId, buildingId), qty) };
+  const factor = Math.pow(def.growth, boostLevels(userId, def.world));
+  return Object.fromEntries(Object.entries(def.cost).map(([t, base]) => [t, base * factor]));
 }
 
-/** Static registry for the client UI (no per-player data). */
+/** Static registry for the client UI (rarities, colors, worlds, boosters, config). */
 export function config() {
-  return { worlds: WORLDS, buildings: BUILDINGS, capSeconds: CAP_SECONDS };
+  return { rarities: RARITIES, weightTotal: WEIGHT_TOTAL, worlds: WORLDS, boosters: BOOSTERS, energy: ENERGY };
 }

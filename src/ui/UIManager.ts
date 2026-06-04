@@ -50,10 +50,17 @@ export class UIManager {
 
   // Resources (Phase 2): cached static registry + last server snapshot, which
   // the UI extrapolates client-side between syncs for a smooth ticking display.
-  private resourceConfig: { worlds: any[]; buildings: any[]; capSeconds?: number } | null = null;
-  private resourceState: { resources: Record<string, number>; rates: Record<string, number>; buildings: Record<string, number>; fetchedAt: number } | null = null;
+  private resourceConfig: any = null;
+  private resourceState: {
+    resources: Record<string, number>;
+    energy: Record<string, { energy: number; max: number; regenPerSec: number }>;
+    buildings: Record<string, number>; fetchedAt: number;
+  } | null = null;
   private resIconMap: Record<string, string> = {};
   private resNameMap: Record<string, string> = {};
+  private resRarity: Record<string, string> = {};       // type → rarity id
+  private rarityColor: Record<string, string> = {};      // rarity id → colour
+  private rarityRank: Record<string, number> = {};       // rarity id → order (for sorting)
   private resourceSyncAccum = 0;
 
   // Trading (Phase 3): which lobby we're in (null = browsing the list), the last
@@ -246,7 +253,7 @@ export class UIManager {
     this.updateStats();
     this.refreshShopRows();
     this.refreshBoosts();
-    if (this.activeTab === 'resources') this.refreshResourceAmounts(); // smooth ticking
+    if (this.activeTab === 'resources') this.refreshResourceEnergy(); // smooth energy regen
     this.throttle += dt;
     if (this.throttle >= 0.4) {
       this.throttle = 0;
@@ -984,7 +991,11 @@ export class UIManager {
     };
   }
 
-  // === Resources (Phase 2) ================================================
+  // === Resources: rarity drops (server-authoritative) =====================
+  private applyResourceSnapshot(snap: any): void {
+    this.resourceState = { resources: snap.resources, energy: snap.energy, buildings: snap.buildings, fetchedAt: Date.now() };
+  }
+
   /** Build/refresh the Rohstoffe tab (locked unless connected to the server). */
   async buildResources(): Promise<void> {
     const container = this.$('resources-content');
@@ -993,8 +1004,8 @@ export class UIManager {
       this.resourceState = null;
       container.innerHTML = `
         <div class="res-locked">
-          <p>🔒 Rohstoffe werden serverseitig produziert, gelagert und gehandelt.</p>
-          <p class="hint">Melde dich mit einem Konto (oder als Gast) an, um zu starten.</p>
+          <p>🔒 Rohstoffe werden durch aktives Sammeln server-seitig erwürfelt (raritätsbasiert).</p>
+          <p class="hint">Melde dich mit einem Konto (oder als Gast) an, um zu sammeln.</p>
           <button data-act="res-auth">🔐 Anmelden / Registrieren</button>
         </div>`;
       container.querySelector('[data-act="res-auth"]')?.addEventListener('click', () => this.openAuthModal());
@@ -1002,13 +1013,14 @@ export class UIManager {
     }
     try {
       if (!this.resourceConfig) {
-        this.resourceConfig = await om.fetchResourceConfig();
-        for (const w of this.resourceConfig!.worlds) {
-          for (const r of w.resources) { this.resIconMap[r.type] = r.icon; this.resNameMap[r.type] = r.name; }
+        const cfg = await om.fetchResourceConfig();
+        this.resourceConfig = cfg;
+        cfg.rarities.forEach((r: any, i: number) => { this.rarityColor[r.id] = r.color; this.rarityRank[r.id] = i; });
+        for (const w of cfg.worlds) for (const r of w.resources) {
+          this.resIconMap[r.type] = r.icon; this.resNameMap[r.type] = r.name; this.resRarity[r.type] = r.rarity;
         }
       }
-      const snap = await om.fetchResources();
-      this.resourceState = { resources: snap.resources, rates: snap.rates, buildings: snap.buildings, fetchedAt: Date.now() };
+      this.applyResourceSnapshot(await om.fetchResources());
       this.renderResources();
     } catch (e) {
       container.innerHTML = `<p class="empty">Rohstoffe konnten nicht geladen werden: ${escapeHtml((e as Error).message)}</p>`;
@@ -1019,75 +1031,130 @@ export class UIManager {
     const cfg = this.resourceConfig, st = this.resourceState;
     if (!cfg || !st) return;
     const container = this.$('resources-content');
-    let html = '';
-    for (const w of cfg.worlds) {
-      const stocks = w.resources.map((r: any) =>
-        `<div class="res-chip"><span class="res-ico">${r.icon}</span><b class="res-amt" data-res="${r.type}">0</b><span class="res-rate" data-rate="${r.type}"></span></div>`).join('');
-      const blds = cfg.buildings.filter((b: any) => b.world === w.world).map((b: any) => {
-        const count = st.buildings[b.id] ?? 0;
-        return `<button class="res-build" data-build="${b.id}">
-          <span class="rb-icon">${this.resIconMap[b.produces] ?? '📦'}</span>
-          <span class="rb-main">
-            <span class="rb-name">${escapeHtml(b.name)}</span>
-            <span class="rb-prod">+${formatNumber(b.rate, 2)}/s ${escapeHtml(this.resNameMap[b.produces] ?? b.produces)} · <span data-count="${b.id}">×${count}</span></span>
-          </span>
-          <span class="rb-cost" data-cost="${b.id}"></span>
-        </button>`;
-      }).join('');
-      html += `<div class="res-world"><h3>${escapeHtml(w.name)}</h3><div class="res-stocks">${stocks}</div><div class="res-buildings">${blds}</div></div>`;
-    }
-    container.innerHTML = html;
-    container.querySelectorAll<HTMLElement>('[data-build]').forEach((btn) =>
-      btn.addEventListener('click', () => this.handleBuildResource(btn.dataset.build!)));
-    this.refreshResourceAmounts();
+    const boosterByWorld: Record<string, any> = {};
+    for (const b of cfg.boosters) boosterByWorld[b.world] = b;
+
+    const worldsHtml = cfg.worlds.map((w: any) => {
+      const b = boosterByWorld[w.world];
+      const tiers = w.resources.map((r: any) =>
+        `<span class="tier-dot" title="${escapeHtml(this.rarityName(r.rarity))}: ${escapeHtml(r.name)}" style="background:${this.rarityColor[r.rarity]}"></span>`).join('');
+      return `
+        <div class="res-world">
+          <div class="rw-head"><h3>${escapeHtml(w.name)}</h3><span class="rw-tiers">${tiers}</span></div>
+          <div class="energy-row">
+            <div class="energy-bar"><div class="energy-fill" data-efill="${w.world}"></div></div>
+            <span class="energy-text" data-etext="${w.world}"></span>
+          </div>
+          <div class="roll-row">
+            <button class="roll-btn" data-roll="${w.world}">🎲 Sammeln <small>(1 ⚡)</small></button>
+            <div class="drop-reveal" data-reveal="${w.world}"></div>
+          </div>
+          ${b ? `<button class="res-build" data-build="${b.id}">
+            <span class="rb-icon">⚡</span>
+            <span class="rb-main"><span class="rb-name">${escapeHtml(b.name)}</span>
+              <span class="rb-prod">+${b.effect.energyMax} Max-Energie · ×<span data-count="${b.id}">${st.buildings[b.id] ?? 0}</span></span></span>
+            <span class="rb-cost" data-cost="${b.id}"></span>
+          </button>` : ''}
+        </div>`;
+    }).join('');
+
+    container.innerHTML = `<div class="res-worlds">${worldsHtml}</div><h3>🎒 Inventar</h3><div id="res-inventory"></div>`;
+    container.querySelectorAll<HTMLElement>('[data-roll]').forEach((btn) => btn.addEventListener('click', () => this.handleRoll(btn.dataset.roll!)));
+    container.querySelectorAll<HTMLElement>('[data-build]').forEach((btn) => btn.addEventListener('click', () => this.handleBuildResource(btn.dataset.build!)));
+    this.renderInventory();
+    this.refreshResourceEnergy();
   }
 
-  /** Cost of the NEXT unit (geometric in the owned count) — mirrors the server. */
-  private resBuildingCost(b: any, owned: number): Record<string, number> {
-    const g = b.growth ?? 1.15;
-    const f = Math.pow(g, owned);
+  private rarityName(id: string): string {
+    return this.resourceConfig?.rarities.find((r: any) => r.id === id)?.name ?? id;
+  }
+
+  /** The owned-resources inventory, coloured + sorted by rarity (rarest first). */
+  private renderInventory(): void {
+    const st = this.resourceState;
+    const host = document.getElementById('res-inventory');
+    if (!st || !host) return;
+    const owned = Object.entries(st.resources).filter(([, a]) => a > 0)
+      .sort((a, b) => (this.rarityRank[this.resRarity[b[0]]] ?? 0) - (this.rarityRank[this.resRarity[a[0]]] ?? 0));
+    host.innerHTML = owned.length ? owned.map(([type, amt]) => {
+      const col = this.rarityColor[this.resRarity[type]] ?? '#9ca3af';
+      return `<div class="inv-chip" style="border-color:${col}">
+        <span class="inv-ico">${this.resIconMap[type] ?? '📦'}</span>
+        <span class="inv-name" style="color:${col}">${escapeHtml(this.resNameMap[type] ?? type)}</span>
+        <b class="inv-amt">${formatNumber(amt)}</b></div>`;
+    }).join('') : '<p class="empty">Noch keine Rohstoffe — sammle in einer Welt!</p>';
+  }
+
+  private boosterCost(b: any, owned: number): Record<string, number> {
+    const f = Math.pow(b.growth ?? 1.6, owned);
     const cost: Record<string, number> = {};
     for (const [t, base] of Object.entries(b.cost)) cost[t] = (base as number) * f;
     return cost;
   }
 
-  /** Per-frame: extrapolate stocks from the last snapshot + show affordability. */
-  refreshResourceAmounts(): void {
+  /** Per-frame: extrapolate per-world energy + update bars, roll buttons, booster cost. */
+  refreshResourceEnergy(): void {
     const cfg = this.resourceConfig, st = this.resourceState;
     if (!cfg || !st) return;
     const container = this.$('resources-content');
     const elapsed = (Date.now() - st.fetchedAt) / 1000;
     const cur: Record<string, number> = {};
-    for (const type of Object.keys(st.resources)) cur[type] = st.resources[type] + (st.rates[type] ?? 0) * elapsed;
-    container.querySelectorAll<HTMLElement>('[data-res]').forEach((el) => { el.textContent = formatNumber(cur[el.dataset.res!] ?? 0); });
-    container.querySelectorAll<HTMLElement>('[data-rate]').forEach((el) => { el.textContent = `+${formatNumber(st.rates[el.dataset.rate!] ?? 0, 2)}/s`; });
-    for (const b of cfg.buildings) {
-      const cost = this.resBuildingCost(b, st.buildings[b.id] ?? 0);
+    for (const [world, e] of Object.entries(st.energy)) {
+      const energy = Math.min(e.max, e.energy + e.regenPerSec * elapsed);
+      cur[world] = energy;
+      const fill = container.querySelector<HTMLElement>(`[data-efill="${world}"]`);
+      if (fill) fill.style.width = Math.max(0, Math.min(100, (energy / e.max) * 100)) + '%';
+      const txt = container.querySelector<HTMLElement>(`[data-etext="${world}"]`);
+      if (txt) txt.textContent = `${Math.floor(energy)} / ${e.max} ⚡`;
+      const btn = container.querySelector<HTMLButtonElement>(`[data-roll="${world}"]`);
+      if (btn) btn.disabled = energy < 1;
+    }
+    for (const b of cfg.boosters) {
+      const cost = this.boosterCost(b, st.buildings[b.id] ?? 0);
       const costEl = container.querySelector<HTMLElement>(`[data-cost="${b.id}"]`);
       if (costEl) costEl.innerHTML = Object.entries(cost).map(([t, a]) => `${this.resIconMap[t] ?? ''} ${formatNumber(a)}`).join(' · ');
-      const affordable = Object.entries(cost).every(([t, a]) => (cur[t] ?? 0) >= a);
+      const affordable = Object.entries(cost).every(([t, a]) => (st.resources[t] ?? 0) >= a);
       container.querySelector<HTMLElement>(`[data-build="${b.id}"]`)?.classList.toggle('affordable', affordable);
     }
   }
 
-  async handleBuildResource(buildingId: string): Promise<void> {
+  async handleRoll(world: string): Promise<void> {
     try {
-      const snap = await this.game.onlineManager.buildResource(buildingId, 1);
-      this.resourceState = { resources: snap.resources, rates: snap.rates, buildings: snap.buildings, fetchedAt: Date.now() };
-      this.renderResources();
-      this.playSound(560, 0.05);
+      const res = await this.game.onlineManager.rollResource(world);
+      this.applyResourceSnapshot(res);                 // res spreads the fresh snapshot
+      this.showDrop(world, res.drop);
+      this.renderInventory();
+      this.refreshResourceEnergy();
+      this.playSound(res.drop.rarity === 'common' ? 520 : 880, 0.06);
     } catch (e) {
-      this.notify.show({ title: 'Bau fehlgeschlagen', text: (e as Error).message, icon: '⚠️', kind: 'error' });
+      const msg = (e as Error).message;
+      if (!/zu viele|zu schnell/i.test(msg)) this.notify.show({ title: 'Kein Fund', text: msg, icon: '⚡', kind: 'info', duration: 2500 });
     }
   }
 
-  /** Quietly re-fetch the authoritative snapshot (also settles server-side). */
+  private showDrop(world: string, drop: any): void {
+    const slot = this.$('resources-content').querySelector<HTMLElement>(`[data-reveal="${world}"]`);
+    if (!slot) return;
+    slot.innerHTML = `<span class="drop-item" style="border-color:${drop.color};color:${drop.color}">${drop.icon} ${escapeHtml(drop.name)} +${formatNumber(drop.qty)}</span>`;
+    const el = slot.firstElementChild as HTMLElement | null;
+    if (el) { el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop'); }
+  }
+
+  async handleBuildResource(buildingId: string): Promise<void> {
+    try {
+      this.applyResourceSnapshot(await this.game.onlineManager.buildResource(buildingId));
+      this.renderResources(); // energy cap changed → full refresh
+      this.playSound(560, 0.05);
+    } catch (e) {
+      this.notify.show({ title: 'Booster fehlgeschlagen', text: (e as Error).message, icon: '⚠️', kind: 'error' });
+    }
+  }
+
+  /** Quietly re-fetch the authoritative snapshot (corrects energy + reflects trades). */
   private async syncResources(): Promise<void> {
     if (!this.game.onlineManager.usingServer) return;
-    try {
-      const snap = await this.game.onlineManager.fetchResources();
-      this.resourceState = { resources: snap.resources, rates: snap.rates, buildings: snap.buildings, fetchedAt: Date.now() };
-    } catch { /* offline blip — keep extrapolating from the last snapshot */ }
+    try { this.applyResourceSnapshot(await this.game.onlineManager.fetchResources()); this.renderInventory(); this.refreshResourceEnergy(); }
+    catch { /* offline blip — keep extrapolating */ }
   }
 
   // === Trading (Phase 3) ==================================================

@@ -42,13 +42,13 @@ for (let i = 0; i < 50; i++) { try { if ((await fetch(base + '/api/health')).ok)
 
 const T = 4_000_000_000_000; // far future → settle() is always a no-op here
 const mkUser = (n) => queries.createUser({ username: n, token: 'tk-' + n, isGuest: 1 }).id;
-const seed = (uid, res) => tx(() => { resources.settle(uid, T); for (const [k, v] of Object.entries(res)) queries.setResource(uid, k, v); });
+const seed = (uid, res) => tx(() => { for (const [k, v] of Object.entries(res)) queries.setResource(uid, k, v); });
 const wallet = (uid) => Object.fromEntries(queries.getResources(uid).map((r) => [r.type, r.amount]));
 
 try {
   const alice = mkUser('t_alice'), bob = mkUser('t_bob');
-  seed(alice, { wood: 1000, stone: 500 });
-  seed(bob, { iron: 800, coal: 200 });
+  seed(alice, { local_common: 1000, local_uncommon: 500 });
+  seed(bob, { national_common: 800, national_uncommon: 200 });
 
   // --- Lobby lifecycle ---
   const lid = tx(() => trade.createLobby(alice, 'Holz gegen Eisen')).id;
@@ -61,57 +61,57 @@ try {
   ok(tx(() => trade.joinLobby(mkUser('t_carol'), lid)).error, 'a third player cannot join a full lobby');
 
   // --- Offers move resources into escrow ---
-  ok(tx(() => trade.setOffer(alice, lid, { wood: 200 }, T)).ok, 'alice offers 200 wood');
-  ok(near(wallet(alice).wood, 800), 'alice wood escrowed (1000 → 800)');
-  ok(tx(() => trade.setOffer(bob, lid, { iron: 100 }, T)).ok, 'bob offers 100 iron');
-  ok(near(wallet(bob).iron, 700), 'bob iron escrowed (800 → 700)');
-  ok(tx(() => trade.setOffer(alice, lid, { wood: 1e9 }, T)).error, 'cannot offer more than owned');
+  ok(tx(() => trade.setOffer(alice, lid, { local_common: 200 }, T)).ok, 'alice offers 200 local_common');
+  ok(near(wallet(alice).local_common, 800), 'alice local_common escrowed (1000 → 800)');
+  ok(tx(() => trade.setOffer(bob, lid, { national_common: 100 }, T)).ok, 'bob offers 100 national_common');
+  ok(near(wallet(bob).national_common, 700), 'bob national_common escrowed (800 → 700)');
+  ok(tx(() => trade.setOffer(alice, lid, { local_common: 1e9 }, T)).error, 'cannot offer more than owned');
 
   // --- Confirming, then changing an offer, resets confirmations ---
   tx(() => trade.confirm(alice, lid, true, T));
   ok(tx(() => trade.getLobbyState(alice, lid, T)).you.confirmed, 'alice is confirmed');
-  tx(() => trade.setOffer(bob, lid, { iron: 120 }, T)); // change → reset both
+  tx(() => trade.setOffer(bob, lid, { national_common: 120 }, T)); // change → reset both
   ok(!tx(() => trade.getLobbyState(alice, lid, T)).you.confirmed, 'changing an offer reset alice’s confirmation');
-  ok(near(wallet(bob).iron, 680), 'raising the offer escrows more (700 → 680)');
+  ok(near(wallet(bob).national_common, 680), 'raising the offer escrows more (700 → 680)');
 
   // --- Both confirm → atomic swap ---
   tx(() => trade.confirm(alice, lid, true, T));
   ok(tx(() => trade.confirm(bob, lid, true, T)).completed, 'trade executes when both confirm');
-  ok(near(wallet(alice).iron, 120), 'alice received 120 iron');
-  ok(near(wallet(bob).wood, 200), 'bob received 200 wood');
-  ok(near(wallet(alice).wood, 800), 'alice keeps her remaining 800 wood');
+  ok(near(wallet(alice).national_common, 120), 'alice received 120 national_common');
+  ok(near(wallet(bob).local_common, 200), 'bob received 200 local_common');
+  ok(near(wallet(alice).local_common, 800), 'alice keeps her remaining 800 local_common');
   ok(tx(() => trade.getLobbyState(alice, lid, T)).status === 'completed', 'lobby marked completed');
   ok(trade.history(alice).length === 1 && trade.history(bob).length === 1, 'trade is in both histories');
 
   // --- Leaving refunds escrow ---
   const dave = mkUser('t_dave');
-  seed(dave, { wood: 300 });
+  seed(dave, { local_common: 300 });
   const l2 = tx(() => trade.createLobby(dave)).id;
-  tx(() => trade.setOffer(dave, l2, { wood: 150 }, T));
-  ok(near(wallet(dave).wood, 150), 'dave escrowed 150 wood');
+  tx(() => trade.setOffer(dave, l2, { local_common: 150 }, T));
+  ok(near(wallet(dave).local_common, 150), 'dave escrowed 150 local_common');
   tx(() => trade.leaveLobby(dave, l2, T));
-  ok(near(wallet(dave).wood, 300), 'leaving refunds the escrow (back to 300)');
+  ok(near(wallet(dave).local_common, 300), 'leaving refunds the escrow (back to 300)');
   ok(tx(() => trade.getLobbyState(dave, l2, T)).status === 'cancelled', 'lobby cancelled on leave');
 
   // --- Double-spend across lobbies is impossible (escrow already removed) ---
   const frank = mkUser('t_frank');
-  seed(frank, { wood: 100 });
+  seed(frank, { local_common: 100 });
   const la = tx(() => trade.createLobby(frank)).id;
   const lb = tx(() => trade.createLobby(frank)).id;
-  ok(tx(() => trade.setOffer(frank, la, { wood: 100 }, T)).ok, 'frank escrows all 100 wood in lobby A');
-  ok(tx(() => trade.setOffer(frank, lb, { wood: 50 }, T)).error, 'cannot offer the same wood again in lobby B');
+  ok(tx(() => trade.setOffer(frank, la, { local_common: 100 }, T)).ok, 'frank escrows all 100 local_common in lobby A');
+  ok(tx(() => trade.setOffer(frank, lb, { local_common: 50 }, T)).error, 'cannot offer the same local_common again in lobby B');
 
   // --- Access control ---
   ok(tx(() => trade.getLobbyState(mkUser('t_outsider'), lid, T)).error, 'non-participant cannot view a lobby');
 
   // --- Expiry sweep refunds stale lobbies ---
   const gus = mkUser('t_gus');
-  seed(gus, { wood: 200 });
+  seed(gus, { local_common: 200 });
   const l3 = tx(() => trade.createLobby(gus)).id;
-  tx(() => trade.setOffer(gus, l3, { wood: 80 }, T));
+  tx(() => trade.setOffer(gus, l3, { local_common: 80 }, T));
   db.prepare('UPDATE lobbies SET updated_at = ? WHERE id = ?').run(1, l3); // backdate → stale
   trade.sweepExpired(T);
-  ok(near(wallet(gus).wood, 200), 'sweep refunded the stale lobby’s escrow');
+  ok(near(wallet(gus).local_common, 200), 'sweep refunded the stale lobby’s escrow');
   ok(tx(() => trade.getLobbyState(gus, l3, T)).status === 'cancelled', 'sweep cancelled the stale lobby');
 
   // --- HTTP wiring + auth ---

@@ -148,6 +148,13 @@ export class UIManager {
         this.bus.on('online:expired', () => this.notify.show({
             title: 'Sitzung abgelaufen', text: 'Bitte melde dich erneut an.', icon: '🔑', kind: 'info', duration: 6000,
         }));
+        // No e-mail delivery yet → show dev tokens (e.g. after registration) so the
+        // verify/reset flow is testable. Harmless once real e-mail is configured.
+        this.bus.on('online:devtoken', (t) => {
+            const tok = t.verify || t.reset;
+            if (tok)
+                this.notify.show({ title: '🔑 Dev-Token (E-Mail noch inaktiv)', text: tok, icon: '🔑', kind: 'info', duration: 10000 });
+        });
         this.bus.on('golden:spawn', (deal) => this.spawnGolden(deal));
         this.bus.on('golden:expire', () => this.removeGolden());
         this.bus.on('quest:complete', ({ quest }) => {
@@ -716,15 +723,28 @@ export class UIManager {
         const transport = om.usingServer ? '🟢 Mit Server verbunden'
             : om.serverReachable === false ? '🟡 Server offline – Simulation'
                 : om.hasServer() ? '⚪ Server konfiguriert' : '⚪ Nur Simulation';
+        const account = s.mode === 'account';
+        const verifyPill = account
+            ? (s.emailVerified ? ' <span class="verify-pill ok">✓ verifiziert</span>' : ' <span class="verify-pill">E-Mail offen</span>')
+            : '';
+        // Verification prompt only for real server accounts that aren't verified yet.
+        const needsVerify = account && om.usingServer && s.emailVerified === false;
         container.innerHTML = `
       <div class="online-status">
-        <div>Status: <b>${status}</b></div>
+        <div>Status: <b>${status}</b>${verifyPill}</div>
         <div class="online-transport">${transport}${om.hasServer() ? ` · <code>${escapeHtml(om.serverUrl)}</code>` : ''}</div>
       </div>
+      ${needsVerify ? `<div class="verify-banner">
+        <span>📧 Bestätige deine E-Mail, um dein Konto abzusichern.</span>
+        <span class="verify-actions">
+          <button data-act="verify" class="btn-ghost small">Bestätigen</button>
+          <button data-act="resend" class="btn-ghost small">Erneut senden</button>
+        </span>
+      </div>` : ''}
       <div class="online-actions">
         ${s.mode === 'offline'
-            ? `<button data-act="guest">Als Gast spielen</button>
-             <button data-act="login">Konto / Anmelden</button>`
+            ? `<button data-act="auth">🔐 Anmelden / Registrieren</button>
+             <button data-act="guest" class="btn-ghost">Als Gast spielen</button>`
             : `<button data-act="sync">☁️ In Cloud speichern</button>
              <button data-act="load">⬇️ Aus Cloud laden</button>
              <button data-act="logout" class="btn-ghost">Abmelden</button>`}
@@ -738,14 +758,22 @@ export class UIManager {
             if (btn)
                 btn.addEventListener('click', fn);
         };
-        on('guest', async () => { await om.loginAsGuest(); this.refreshLeaderboard(); });
-        on('login', async () => {
-            const name = prompt('Benutzername:', this.game.company.name);
-            if (!name)
-                return;
-            const pw = prompt('Passwort (für ein echtes Konto; leer lassen für Gast/Simulation):', '');
-            await om.login(name, pw || '');
-            this.refreshLeaderboard();
+        on('guest', async () => { try {
+            await om.loginAsGuest();
+        }
+        catch { /* sim fallback handles it */ } this.refreshLeaderboard(); });
+        on('auth', () => this.openAuthModal());
+        on('verify', () => this.openVerifyModal());
+        on('resend', async () => {
+            try {
+                const r = await om.resendVerification();
+                this.notify.show({ title: 'Bestätigungs-E-Mail gesendet', icon: '📧', kind: 'success' });
+                if (r?.devVerifyToken)
+                    this.notify.show({ title: '🔑 Dev-Token', text: r.devVerifyToken, icon: '🔑', kind: 'info', duration: 10000 });
+            }
+            catch (e) {
+                this.notify.show({ title: 'Fehler', text: e.message, icon: '⚠️', kind: 'error' });
+            }
         });
         on('logout', () => om.logout());
         on('sync', () => this.cloudSync());
@@ -759,6 +787,169 @@ export class UIManager {
             }
         });
         this.refreshLeaderboard();
+    }
+    /** Small helper: write a status line into an open auth modal. */
+    authMsg(text, kind = 'error') {
+        const el = this.$('modal-layer').querySelector('#auth-msg');
+        if (el) {
+            el.hidden = false;
+            el.textContent = text;
+            el.className = 'auth-msg ' + kind;
+        }
+    }
+    /** Login / Register modal (replaces the old prompt() flow). */
+    openAuthModal() {
+        const om = this.game.onlineManager;
+        this.openModal(`
+      <h2>🔐 Konto</h2>
+      <div class="auth-tabs">
+        <button data-atab="login" class="active">Anmelden</button>
+        <button data-atab="register">Registrieren</button>
+      </div>
+      <div data-aview="login">
+        <label class="field"><span>Benutzername oder E-Mail</span><input id="a-login-id" type="text" autocomplete="username"></label>
+        <label class="field"><span>Passwort</span><input id="a-login-pw" type="password" autocomplete="current-password"></label>
+        <div class="modal-actions">
+          <button class="btn-ghost" data-act="forgot">Passwort vergessen?</button>
+          <button class="btn-prestige" data-act="do-login">Anmelden</button>
+        </div>
+      </div>
+      <div data-aview="register" hidden>
+        <label class="field"><span>Benutzername (3–20 Zeichen)</span><input id="a-reg-name" type="text" autocomplete="username"></label>
+        <label class="field"><span>E-Mail</span><input id="a-reg-email" type="email" autocomplete="email"></label>
+        <label class="field"><span>Passwort (min. 8 Zeichen)</span><input id="a-reg-pw" type="password" autocomplete="new-password"></label>
+        <div class="modal-actions"><button class="btn-prestige" data-act="do-register">Konto erstellen</button></div>
+      </div>
+      <div id="auth-msg" class="auth-msg" hidden></div>`);
+        const m = this.$('modal-layer');
+        const val = (sel) => m.querySelector(sel).value.trim();
+        m.querySelectorAll('[data-atab]').forEach((b) => b.addEventListener('click', () => {
+            const name = b.dataset.atab;
+            m.querySelectorAll('[data-atab]').forEach((x) => x.classList.toggle('active', x === b));
+            m.querySelectorAll('[data-aview]').forEach((v) => { v.hidden = v.dataset.aview !== name; });
+            this.authMsg('', 'ok');
+            m.querySelector('#auth-msg').hidden = true;
+        }));
+        m.querySelector('[data-act="do-login"]').onclick = async () => {
+            const id = val('#a-login-id'), pw = m.querySelector('#a-login-pw').value;
+            if (!id || !pw)
+                return this.authMsg('Bitte beide Felder ausfüllen.');
+            try {
+                await om.login(id, pw);
+                this.closeModal();
+                this.buildOnline();
+                this.refreshLeaderboard();
+                this.notify.show({ title: 'Angemeldet', icon: '✅', kind: 'success' });
+            }
+            catch (e) {
+                this.authMsg(e.message);
+            }
+        };
+        m.querySelector('[data-act="do-register"]').onclick = async () => {
+            const name = val('#a-reg-name'), email = val('#a-reg-email'), pw = m.querySelector('#a-reg-pw').value;
+            try {
+                await om.register(name, email, pw);
+                this.closeModal();
+                this.buildOnline();
+                this.refreshLeaderboard();
+                this.notify.show({ title: 'Konto erstellt', text: 'Bitte E-Mail bestätigen.', icon: '🎉', kind: 'success', duration: 6000 });
+            }
+            catch (e) {
+                this.authMsg(e.message);
+            }
+        };
+        m.querySelector('[data-act="forgot"]').onclick = () => this.openForgotModal();
+    }
+    /** Two-step password reset (request token → set new password). */
+    openForgotModal() {
+        const om = this.game.onlineManager;
+        this.openModal(`
+      <h2>🔑 Passwort zurücksetzen</h2>
+      <p>Fordere einen Reset-Token an (kommt per E-Mail, sobald der Versand aktiv ist), und setze dann ein neues Passwort.</p>
+      <label class="field"><span>E-Mail</span><input id="f-email" type="email" autocomplete="email"></label>
+      <div class="modal-actions"><button class="btn-prestige" data-act="req">Token anfordern</button></div>
+      <hr class="auth-sep">
+      <label class="field"><span>Reset-Token</span><input id="f-token" type="text"></label>
+      <label class="field"><span>Neues Passwort (min. 8 Zeichen)</span><input id="f-pw" type="password" autocomplete="new-password"></label>
+      <div class="modal-actions">
+        <button class="btn-ghost" data-act="back">Zurück</button>
+        <button class="btn-prestige" data-act="reset">Passwort setzen</button>
+      </div>
+      <div id="auth-msg" class="auth-msg" hidden></div>`);
+        const m = this.$('modal-layer');
+        m.querySelector('[data-act="req"]').onclick = async () => {
+            const email = m.querySelector('#f-email').value.trim();
+            if (!email)
+                return this.authMsg('Bitte E-Mail eingeben.');
+            try {
+                const r = await om.requestPasswordReset(email);
+                this.authMsg('Falls ein Konto existiert, wurde ein Token gesendet.', 'ok');
+                if (r?.devResetToken) {
+                    m.querySelector('#f-token').value = r.devResetToken;
+                    this.authMsg('Dev: Token automatisch eingefügt.', 'ok');
+                }
+            }
+            catch (e) {
+                this.authMsg(e.message);
+            }
+        };
+        m.querySelector('[data-act="reset"]').onclick = async () => {
+            const token = m.querySelector('#f-token').value.trim();
+            const pw = m.querySelector('#f-pw').value;
+            if (!token || !pw)
+                return this.authMsg('Token und neues Passwort nötig.');
+            try {
+                await om.resetPassword(token, pw);
+                this.closeModal();
+                this.buildOnline();
+                this.notify.show({ title: 'Passwort geändert', icon: '✅', kind: 'success' });
+            }
+            catch (e) {
+                this.authMsg(e.message);
+            }
+        };
+        m.querySelector('[data-act="back"]').onclick = () => this.openAuthModal();
+    }
+    /** Confirm e-mail ownership with the verification token. */
+    openVerifyModal() {
+        const om = this.game.onlineManager;
+        this.openModal(`
+      <h2>📧 E-Mail bestätigen</h2>
+      <p>Gib den Bestätigungs-Token aus deiner E-Mail ein (oder fordere ihn erneut an).</p>
+      <label class="field"><span>Token</span><input id="v-token" type="text"></label>
+      <div class="modal-actions">
+        <button class="btn-ghost" data-act="resend">Erneut senden</button>
+        <button class="btn-prestige" data-act="do-verify">Bestätigen</button>
+      </div>
+      <div id="auth-msg" class="auth-msg" hidden></div>`);
+        const m = this.$('modal-layer');
+        m.querySelector('[data-act="do-verify"]').onclick = async () => {
+            const token = m.querySelector('#v-token').value.trim();
+            if (!token)
+                return this.authMsg('Bitte Token eingeben.');
+            try {
+                await om.verifyEmail(token);
+                this.closeModal();
+                this.buildOnline();
+                this.notify.show({ title: 'E-Mail bestätigt', icon: '✅', kind: 'success' });
+            }
+            catch (e) {
+                this.authMsg(e.message);
+            }
+        };
+        m.querySelector('[data-act="resend"]').onclick = async () => {
+            try {
+                const r = await om.resendVerification();
+                this.authMsg('Bestätigungs-E-Mail gesendet.', 'ok');
+                if (r?.devVerifyToken) {
+                    m.querySelector('#v-token').value = r.devVerifyToken;
+                    this.authMsg('Dev: Token automatisch eingefügt.', 'ok');
+                }
+            }
+            catch (e) {
+                this.authMsg(e.message);
+            }
+        };
     }
     async cloudSync() {
         try {

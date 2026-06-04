@@ -81,22 +81,54 @@ export class OnlineManager {
     return this.simSession('guest');
   }
 
-  /** Sign in to an account; creates it if it doesn't exist yet. */
-  async login(username: string, password = ''): Promise<OnlineSession> {
+  /** Create a new account (username + e-mail + password). */
+  async register(username: string, email: string, password: string): Promise<OnlineSession> {
     if (this.serverUrl) {
-      try {
-        let r;
-        try {
-          r = await this.api('/api/auth/login', { method: 'POST', body: { username, password } });
-        } catch (e) {
-          if ((e as HttpError).http === 401 && password) {
-            r = await this.api('/api/auth/register', { method: 'POST', body: { username, password } });
-          } else throw e;
-        }
-        return this.applyAuth(r);
-      } catch (e) { this.serverFailed(e as Error); }
+      try { return this.applyAuth(await this.api('/api/auth/register', { method: 'POST', body: { username, email, password } })); }
+      catch (e) { this.bubbleOrFallback(e as HttpError); }
     }
-    return this.simSession(password ? 'account' : 'guest', username);
+    return this.simSession('account', username, email);
+  }
+
+  /** Sign in with a username OR e-mail plus password. */
+  async login(identifier: string, password = ''): Promise<OnlineSession> {
+    if (this.serverUrl) {
+      try { return this.applyAuth(await this.api('/api/auth/login', { method: 'POST', body: { identifier, password } })); }
+      catch (e) { this.bubbleOrFallback(e as HttpError); }
+    }
+    return this.simSession(password ? 'account' : 'guest', identifier);
+  }
+
+  /** Confirm an e-mail with the token from the verification mail/link. */
+  async verifyEmail(token: string): Promise<boolean> {
+    if (!this.serverUrl) throw new Error('Kein Server konfiguriert.');
+    const r = await this.api('/api/auth/verify', { method: 'POST', body: { token } });
+    if (this.isOnline) { this.session.emailVerified = true; this.bus.emit('online:session', this.session); }
+    return !!r.ok;
+  }
+
+  /** Re-send the verification mail for the logged-in account. */
+  async resendVerification(): Promise<{ devVerifyToken?: string }> {
+    if (!this.usingServer) throw new Error('Dafür musst du mit dem Server angemeldet sein.');
+    return this.api('/api/auth/resend-verification', { method: 'POST', body: {}, auth: true });
+  }
+
+  /** Ask for a password-reset mail. Resolves regardless (no account enumeration). */
+  async requestPasswordReset(email: string): Promise<{ devResetToken?: string }> {
+    if (!this.serverUrl) throw new Error('Kein Server konfiguriert.');
+    return this.api('/api/auth/forgot', { method: 'POST', body: { email } });
+  }
+
+  /** Set a new password with a reset token; logs in with a fresh session. */
+  async resetPassword(token: string, password: string): Promise<OnlineSession> {
+    if (!this.serverUrl) throw new Error('Kein Server konfiguriert.');
+    return this.applyAuth(await this.api('/api/auth/reset', { method: 'POST', body: { token, password } }));
+  }
+
+  /** Re-surface a real server error to the caller; only swallow network failures. */
+  private bubbleOrFallback(e: HttpError): void {
+    if (typeof e.http === 'number') throw e; // server responded (e.g. 401/409) → let the UI show it
+    this.serverFailed(e);                    // unreachable → caller falls back to simulation
   }
 
   logout(): void {
@@ -181,10 +213,17 @@ export class OnlineManager {
   private applyAuth(r: any): OnlineSession {
     this.token = r.token;
     localStorage.setItem(this.storageKey + '-token', r.token);
-    this.session = { mode: r.mode ?? 'account', username: r.username, lastSync: 0 };
+    this.session = {
+      mode: r.mode ?? 'account', username: r.username,
+      email: r.email ?? null, emailVerified: !!r.emailVerified, lastSync: 0,
+    };
     this.usingServer = true;
     this.serverReachable = true;
     this.bus.emit('online:session', this.session);
+    // No real e-mail delivery yet → surface dev tokens so the flow stays testable.
+    if (r.devVerifyToken || r.devResetToken) {
+      this.bus.emit('online:devtoken', { verify: r.devVerifyToken, reset: r.devResetToken });
+    }
     return this.session;
   }
 
@@ -195,11 +234,13 @@ export class OnlineManager {
   }
 
   // === Simulation fallback (localStorage) ================================
-  private simSession(mode: 'guest' | 'account', username?: string): OnlineSession {
+  private simSession(mode: 'guest' | 'account', username?: string, email?: string): OnlineSession {
     this.usingServer = false;
     this.session = {
       mode,
       username: username || (mode === 'guest' ? 'Gast-' + this.shortId() : 'Spieler'),
+      email: email ?? null,
+      emailVerified: mode === 'account', // simulation has no e-mail infra → treat as verified
       lastSync: 0,
     };
     this.bus.emit('online:session', this.session);

@@ -3,7 +3,8 @@
  *
  * Uses Node's built-in SQLite (node:sqlite, Node ≥ 22) — no native npm
  * dependency to compile. Exposes small, prepared-statement-backed helpers so
- * the route layer never writes SQL inline.
+ * the route layer never writes SQL inline (which also makes SQL-injection
+ * impossible: every value is bound, never string-concatenated).
  */
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
@@ -14,17 +15,25 @@ const DB_PATH = process.env.DB_PATH ?? join(__dirname, 'imperium.db');
 
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL;');
+db.exec('PRAGMA foreign_keys = ON;');
+db.exec('PRAGMA busy_timeout = 5000;'); // wait instead of failing on a brief write lock
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    username      TEXT UNIQUE NOT NULL,
-    password_hash TEXT,
-    salt          TEXT,
-    token         TEXT,
-    token_expires INTEGER NOT NULL DEFAULT 0,
-    is_guest      INTEGER NOT NULL DEFAULT 0,
-    created_at    INTEGER NOT NULL
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    username       TEXT UNIQUE NOT NULL,
+    email          TEXT,
+    password_hash  TEXT,
+    salt           TEXT,
+    token          TEXT,
+    token_expires  INTEGER NOT NULL DEFAULT 0,
+    email_verified INTEGER NOT NULL DEFAULT 0,
+    verify_token   TEXT,
+    verify_expires INTEGER NOT NULL DEFAULT 0,
+    reset_token    TEXT,
+    reset_expires  INTEGER NOT NULL DEFAULT 0,
+    is_guest       INTEGER NOT NULL DEFAULT 0,
+    created_at     INTEGER NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS saves (
@@ -43,22 +52,46 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_users_token ON users(token);
   CREATE INDEX IF NOT EXISTS idx_lb_valuation ON leaderboard(valuation DESC);
+  /* Partial unique index: at most one account per e-mail, but many NULLs
+     (guests + legacy accounts) are allowed. */
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;
 `);
 
-// Migration für DBs, die noch vor dem Token-Ablauf angelegt wurden.
-try {
-  db.exec('ALTER TABLE users ADD COLUMN token_expires INTEGER NOT NULL DEFAULT 0');
-} catch { /* Spalte existiert bereits — ok */ }
+// Idempotent migrations for databases created before these columns existed.
+for (const col of [
+  'email TEXT',
+  'email_verified INTEGER NOT NULL DEFAULT 0',
+  'verify_token TEXT',
+  'verify_expires INTEGER NOT NULL DEFAULT 0',
+  'reset_token TEXT',
+  'reset_expires INTEGER NOT NULL DEFAULT 0',
+  'token_expires INTEGER NOT NULL DEFAULT 0',
+]) {
+  try { db.exec(`ALTER TABLE users ADD COLUMN ${col}`); } catch { /* column already present — ok */ }
+}
 
 // --- Prepared statements ---------------------------------------------------
 const stmts = {
+  userById: db.prepare('SELECT * FROM users WHERE id = ?'),
   userByToken: db.prepare('SELECT * FROM users WHERE token = ?'),
   userByName: db.prepare('SELECT * FROM users WHERE username = ?'),
+  userByEmail: db.prepare('SELECT * FROM users WHERE email = ? AND email IS NOT NULL'),
+  userByVerifyToken: db.prepare('SELECT * FROM users WHERE verify_token = ?'),
+  userByResetToken: db.prepare('SELECT * FROM users WHERE reset_token = ?'),
   insertUser: db.prepare(
-    `INSERT INTO users (username, password_hash, salt, token, token_expires, is_guest, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO users
+       (username, email, password_hash, salt, token, token_expires,
+        email_verified, verify_token, verify_expires, is_guest, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ),
   setToken: db.prepare('UPDATE users SET token = ?, token_expires = ? WHERE id = ?'),
+  setVerifyToken: db.prepare('UPDATE users SET verify_token = ?, verify_expires = ? WHERE id = ?'),
+  markVerified: db.prepare('UPDATE users SET email_verified = 1, verify_token = NULL, verify_expires = 0 WHERE id = ?'),
+  setResetToken: db.prepare('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?'),
+  updatePassword: db.prepare(
+    `UPDATE users SET password_hash = ?, salt = ?, token = ?, token_expires = ?,
+       reset_token = NULL, reset_expires = 0 WHERE id = ?`
+  ),
   getSave: db.prepare('SELECT data, updated_at FROM saves WHERE user_id = ?'),
   putSave: db.prepare(
     `INSERT INTO saves (user_id, data, updated_at) VALUES (?, ?, ?)
@@ -77,13 +110,28 @@ const stmts = {
 };
 
 export const queries = {
+  getUserById: (id) => stmts.userById.get(id),
   getUserByToken: (token) => stmts.userByToken.get(token),
   getUserByName: (name) => stmts.userByName.get(name),
-  createUser: ({ username, passwordHash = null, salt = null, token, tokenExpires = 0, isGuest = 0 }) => {
-    const info = stmts.insertUser.run(username, passwordHash, salt, token, tokenExpires, isGuest, Date.now());
+  getUserByEmail: (email) => stmts.userByEmail.get(email),
+  getUserByVerifyToken: (token) => stmts.userByVerifyToken.get(token),
+  getUserByResetToken: (token) => stmts.userByResetToken.get(token),
+  createUser: ({
+    username, email = null, passwordHash = null, salt = null, token,
+    tokenExpires = 0, emailVerified = 0, verifyToken = null, verifyExpires = 0, isGuest = 0,
+  }) => {
+    const info = stmts.insertUser.run(
+      username, email, passwordHash, salt, token, tokenExpires,
+      emailVerified, verifyToken, verifyExpires, isGuest, Date.now()
+    );
     return stmts.userByName.get(username) ?? { id: info.lastInsertRowid, username };
   },
   setToken: (userId, token, tokenExpires) => stmts.setToken.run(token, tokenExpires, userId),
+  setVerifyToken: (userId, token, expires) => stmts.setVerifyToken.run(token, expires, userId),
+  markEmailVerified: (userId) => stmts.markVerified.run(userId),
+  setResetToken: (userId, token, expires) => stmts.setResetToken.run(token, expires, userId),
+  updatePassword: (userId, passwordHash, salt, token, tokenExpires) =>
+    stmts.updatePassword.run(passwordHash, salt, token, tokenExpires, userId),
   getSave: (userId) => stmts.getSave.get(userId),
   putSave: (userId, data) => stmts.putSave.run(userId, data, Date.now()),
   upsertLeaderboard: (userId, name, valuation, prestige) =>

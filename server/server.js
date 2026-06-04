@@ -22,6 +22,7 @@ import express from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { queries, seedRivalsIfEmpty } from './db.js';
+import { sendVerification, sendPasswordReset, DEV_RETURN_TOKENS } from './mailer.js';
 
 const PORT = process.env.PORT ?? 3000;
 // In production bind to 127.0.0.1 so the backend is only reachable through the
@@ -30,6 +31,20 @@ const HOST = process.env.HOST ?? '0.0.0.0';
 
 /** Bearer-Token-Lebensdauer (danach ist eine erneute Anmeldung nötig). */
 const TOKEN_TTL = 7 * 24 * 3600 * 1000; // 7 Tage
+const VERIFY_TTL = 24 * 3600 * 1000;    // E-Mail-Bestätigungslink: 24 h
+const RESET_TTL = 60 * 60 * 1000;       // Passwort-Reset-Link: 1 h
+
+// --- Eingabevalidierung (gegen Müll-/Injection-Eingaben; SQL ist ohnehin
+// durch Prepared Statements geschützt) -------------------------------------
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const USERNAME_RE = /^[A-Za-z0-9_-]{3,20}$/;
+function registrationError({ username, email, password }) {
+  if (!username || !USERNAME_RE.test(String(username))) return 'Benutzername: 3–20 Zeichen (Buchstaben, Zahlen, _ und -).';
+  if (!email || !EMAIL_RE.test(String(email)) || String(email).length > 254) return 'Bitte eine gültige E-Mail-Adresse angeben.';
+  if (!password || String(password).length < 8) return 'Das Passwort muss mindestens 8 Zeichen lang sein.';
+  if (String(password).length > 200) return 'Das Passwort ist zu lang (max. 200 Zeichen).';
+  return null;
+}
 
 // Anti-Cheat: Plausibilitätsgrenzen für eingereichte Firmenwerte.
 const HARD_CAP = 1e60;          // blockt Overflow / Unfug (Infinity, 1e308 …)
@@ -55,7 +70,7 @@ app.use((req, res, next) => {
 // Allgemeines Limit gegen Spam (normales Spiel bleibt weit darunter).
 const apiLimiter = rateLimit({
   windowMs: 60_000,
-  limit: 120, // pro IP und Minute
+  limit: Number(process.env.API_RATE_LIMIT ?? 120), // pro IP und Minute
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   message: { error: 'Zu viele Anfragen – bitte kurz warten.' },
@@ -63,7 +78,7 @@ const apiLimiter = rateLimit({
 // Striktes Limit gegen Brute-Force auf die Anmelde-Endpunkte.
 const authLimiter = rateLimit({
   windowMs: 15 * 60_000,
-  limit: 20, // pro IP und 15 Minuten
+  limit: Number(process.env.AUTH_RATE_LIMIT ?? 20), // pro IP und 15 Minuten
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   message: { error: 'Zu viele Anmeldeversuche – bitte später erneut versuchen.' },
@@ -108,6 +123,15 @@ function optionalAuth(req, _res, next) {
 }
 
 // --- Auth routes -----------------------------------------------------------
+const accountPayload = (user, token) => ({
+  username: user.username,
+  email: user.email ?? null,
+  emailVerified: !!user.email_verified,
+  mode: 'account',
+  token,
+  expiresIn: TOKEN_TTL,
+});
+
 app.post('/api/auth/guest', authLimiter, (req, res) => {
   const username = 'Gast-' + randomBytes(2).toString('hex').toUpperCase();
   const token = makeToken();
@@ -115,26 +139,104 @@ app.post('/api/auth/guest', authLimiter, (req, res) => {
   res.json({ username, token, mode: 'guest', expiresIn: TOKEN_TTL });
 });
 
-app.post('/api/auth/register', authLimiter, (req, res) => {
-  const { username, password } = req.body ?? {};
-  if (!username || !password) return res.status(400).json({ error: 'Benutzername und Passwort nötig' });
-  if (String(password).length < 4) return res.status(400).json({ error: 'Passwort zu kurz (min. 4 Zeichen)' });
-  if (queries.getUserByName(username)) return res.status(409).json({ error: 'Benutzername bereits vergeben' });
+app.post('/api/auth/register', authLimiter, async (req, res) => {
+  const { username, email, password } = req.body ?? {};
+  const err = registrationError({ username, email, password });
+  if (err) return res.status(400).json({ error: err });
+  const uname = String(username).slice(0, 40);
+  const mail = String(email).toLowerCase();
+  if (queries.getUserByName(uname)) return res.status(409).json({ error: 'Benutzername bereits vergeben' });
+  if (queries.getUserByEmail(mail)) return res.status(409).json({ error: 'E-Mail ist bereits registriert' });
+
   const { salt, hash } = hashPassword(password);
   const token = makeToken();
-  queries.createUser({ username: String(username).slice(0, 40), passwordHash: hash, salt, token, tokenExpires: tokenExpiry(), isGuest: 0 });
-  res.json({ username, token, mode: 'account', expiresIn: TOKEN_TTL });
+  const verifyToken = makeToken();
+  let user;
+  try {
+    user = queries.createUser({
+      username: uname, email: mail, passwordHash: hash, salt,
+      token, tokenExpires: tokenExpiry(),
+      verifyToken, verifyExpires: Date.now() + VERIFY_TTL, isGuest: 0,
+    });
+  } catch {
+    // Unique-Index-Verletzung (Race) → generische Meldung.
+    return res.status(409).json({ error: 'Benutzername oder E-Mail bereits vergeben' });
+  }
+  try { await sendVerification(mail, verifyToken, { username: uname }); } catch { /* mail best-effort */ }
+  res.json({ ...accountPayload(user, token), emailVerified: false,
+    ...(DEV_RETURN_TOKENS ? { devVerifyToken: verifyToken } : {}) });
 });
 
 app.post('/api/auth/login', authLimiter, (req, res) => {
-  const { username, password } = req.body ?? {};
-  const user = username && queries.getUserByName(username);
-  if (!user || user.is_guest || !verifyPassword(password ?? '', user.salt, user.password_hash)) {
-    return res.status(401).json({ error: 'Falscher Benutzername oder Passwort' });
+  const { username, email, identifier, password } = req.body ?? {};
+  const id = String(identifier ?? username ?? email ?? '').trim();
+  if (!id || !password) return res.status(400).json({ error: 'Bitte Benutzername/E-Mail und Passwort angeben.' });
+  const user = id.includes('@') ? queries.getUserByEmail(id.toLowerCase()) : queries.getUserByName(id);
+  // Generic message — never reveal which half was wrong.
+  if (!user || user.is_guest || !user.password_hash || !verifyPassword(String(password), user.salt, user.password_hash)) {
+    return res.status(401).json({ error: 'Falscher Benutzername/E-Mail oder Passwort' });
   }
   const token = makeToken();
   queries.setToken(user.id, token, tokenExpiry());
-  res.json({ username: user.username, token, mode: 'account', expiresIn: TOKEN_TTL });
+  res.json(accountPayload(user, token));
+});
+
+// Confirm e-mail ownership via the token from the verification mail.
+app.post('/api/auth/verify', authLimiter, (req, res) => {
+  const token = String(req.body?.token ?? '');
+  const user = token && queries.getUserByVerifyToken(token);
+  if (!user || !user.verify_expires || user.verify_expires < Date.now()) {
+    return res.status(400).json({ error: 'Ungültiger oder abgelaufener Bestätigungslink.' });
+  }
+  queries.markEmailVerified(user.id);
+  res.json({ ok: true, emailVerified: true });
+});
+
+// Re-issue a verification mail for the logged-in account.
+app.post('/api/auth/resend-verification', authLimiter, requireAuth, async (req, res) => {
+  const user = req.user;
+  if (!user.email) return res.status(400).json({ error: 'Dieses Konto hat keine E-Mail-Adresse.' });
+  if (user.email_verified) return res.json({ ok: true, emailVerified: true });
+  const verifyToken = makeToken();
+  queries.setVerifyToken(user.id, verifyToken, Date.now() + VERIFY_TTL);
+  try { await sendVerification(user.email, verifyToken, { username: user.username }); } catch { /* best-effort */ }
+  res.json({ ok: true, ...(DEV_RETURN_TOKENS ? { devVerifyToken: verifyToken } : {}) });
+});
+
+// Request a password reset. Always returns ok (no account enumeration).
+app.post('/api/auth/forgot', authLimiter, async (req, res) => {
+  const mail = String(req.body?.email ?? '').toLowerCase().trim();
+  const user = EMAIL_RE.test(mail) ? queries.getUserByEmail(mail) : null;
+  let devResetToken;
+  if (user && !user.is_guest) {
+    const resetToken = makeToken();
+    queries.setResetToken(user.id, resetToken, Date.now() + RESET_TTL);
+    try { await sendPasswordReset(mail, resetToken); } catch { /* best-effort */ }
+    devResetToken = resetToken;
+  }
+  res.json({ ok: true, ...(DEV_RETURN_TOKENS && devResetToken ? { devResetToken } : {}) });
+});
+
+// Set a new password using the reset token; rotates the session (old token dies).
+app.post('/api/auth/reset', authLimiter, (req, res) => {
+  const token = String(req.body?.token ?? '');
+  const password = req.body?.password;
+  if (!token || !password) return res.status(400).json({ error: 'Token und neues Passwort nötig.' });
+  if (String(password).length < 8) return res.status(400).json({ error: 'Das Passwort muss mindestens 8 Zeichen lang sein.' });
+  const user = queries.getUserByResetToken(token);
+  if (!user || !user.reset_expires || user.reset_expires < Date.now()) {
+    return res.status(400).json({ error: 'Ungültiger oder abgelaufener Reset-Link.' });
+  }
+  const { salt, hash } = hashPassword(password);
+  const newToken = makeToken();
+  queries.updatePassword(user.id, hash, salt, newToken, tokenExpiry());
+  res.json(accountPayload({ ...user, password_hash: hash }, newToken));
+});
+
+// Current session info (used by the client to refresh verification status).
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  const u = req.user;
+  res.json({ username: u.username, email: u.email ?? null, emailVerified: !!u.email_verified, mode: u.is_guest ? 'guest' : 'account' });
 });
 
 // --- Cloud saves -----------------------------------------------------------

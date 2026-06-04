@@ -394,6 +394,23 @@ h3 { font-size: 0.95rem; margin: 0.9rem 0 0.5rem; color: var(--muted); text-tran
 .lb-rank { color: var(--muted); font-weight: 700; }
 .lb-val { color: var(--good); font-weight: 700; }
 
+/* ===== Account / auth ===== */
+.verify-pill { font-size: 0.66rem; font-weight: 800; padding: 0.1rem 0.45rem; border-radius: 999px;
+  background: color-mix(in srgb, var(--warn) 25%, var(--panel-3)); color: var(--text); }
+.verify-pill.ok { background: color-mix(in srgb, var(--good) 25%, var(--panel-3)); }
+.verify-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem;
+  background: color-mix(in srgb, var(--warn) 14%, var(--panel-2)); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  border-radius: 10px; padding: 0.55rem 0.75rem; margin-bottom: 0.6rem; font-size: 0.82rem; }
+.verify-actions { display: flex; gap: 0.4rem; }
+.auth-tabs { display: flex; gap: 0.4rem; margin-bottom: 0.8rem; }
+.auth-tabs button { flex: 1; border: 1px solid var(--border); background: var(--panel-2); color: var(--muted);
+  border-radius: 9px; padding: 0.5rem; font-weight: 700; }
+.auth-tabs button.active { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--text); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.auth-msg { margin-top: 0.7rem; font-size: 0.82rem; font-weight: 600; padding: 0.5rem 0.7rem; border-radius: 9px; }
+.auth-msg.error { background: color-mix(in srgb, var(--bad) 16%, var(--panel-2)); color: var(--bad); }
+.auth-msg.ok { background: color-mix(in srgb, var(--good) 16%, var(--panel-2)); color: var(--good); }
+.auth-sep { border: none; border-top: 1px solid var(--border); margin: 1rem 0; }
+
 /* ===== Modal ===== */
 #modal-layer { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
   background: rgba(3, 6, 14, 0.7); backdrop-filter: blur(4px); padding: 1rem; }

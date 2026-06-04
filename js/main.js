@@ -56,6 +56,9 @@ function boot() {
             }
         }
     }
+    // Show "what's new" once if there are unseen updates (skipped while the
+    // offline-welcome modal is already on screen).
+    ui.maybeAutoShowNews();
     game.start();
     // Autosave every 30 s.
     setInterval(() => { if (game.settings.autosave)

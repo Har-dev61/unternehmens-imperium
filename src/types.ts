@@ -108,6 +108,19 @@ export interface PrestigeUpgradeDef {
   offline?: { efficiency: number; cap: number };
 }
 
+export type NewsType = 'update' | 'upcoming' | 'fix' | 'event' | 'info';
+
+/** A single entry in the news / changelog center (see data/news.ts). */
+export interface NewsEntry {
+  id: string;          // stable, unique id — used to track what the player has seen
+  date: string;        // 'YYYY-MM-DD' announcement date; drives ordering & display
+  type: NewsType;      // controls the icon/accent and which section it lands in
+  title: string;       // short headline
+  tag?: string;        // small label, e.g. 'v1.1' or 'Server'
+  eta?: string;        // for 'upcoming': human-readable timing, e.g. 'geplant für Q3'
+  items: string[];     // bullet points (plain text)
+}
+
 export type BuyQuantity = '1' | '10' | '100' | 'max';
 
 export interface GameSettings {

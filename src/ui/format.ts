@@ -49,6 +49,12 @@ export function formatTime(totalSeconds: number): string {
   return parts.join(' ');
 }
 
+/** Format an ISO 'YYYY-MM-DD' date as German 'DD.MM.YYYY' (no Date parsing → timezone-safe). */
+export function formatDate(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : iso;
+}
+
 function trimZeros(str: string): string {
   return str.replace(/\.?0+$/, '');
 }

@@ -1,5 +1,6 @@
-import { formatNumber, formatMoney, formatRate, formatTime } from './format.js';
+import { formatNumber, formatMoney, formatRate, formatTime, formatDate } from './format.js';
 import { UPGRADE_CATEGORIES } from '../data/upgrades.js';
+import { NEWS_ENTRIES, NEWS_TYPE_META } from '../data/news.js';
 import type { Game, DailyReward } from '../core/Game.js';
 import type { Notifications } from './Notifications.js';
 import type { EventBus } from '../systems/EventBus.js';
@@ -7,7 +8,7 @@ import type { Asset } from '../core/Asset.js';
 import type { Upgrade } from '../core/Upgrade.js';
 import type { Quest } from '../core/Quest.js';
 import type { GoldenActive } from '../systems/GoldenDeal.js';
-import type { BuyQuantity, UpgradeCategory, ResearchUpgradeConfig } from '../types.js';
+import type { BuyQuantity, UpgradeCategory, ResearchUpgradeConfig, NewsEntry } from '../types.js';
 
 interface ShopRow {
   asset: Asset;
@@ -44,6 +45,8 @@ export class UIManager {
   private throttle = 0;
   private audioCtx: AudioContext | null = null;
   private goldenEl: HTMLElement | null = null;
+  /** localStorage key remembering the newest news entry the player has opened. */
+  private readonly newsSeenKey = 'imperium-news-seen';
 
   private clickButton!: HTMLElement;
   private shopList!: HTMLElement;
@@ -76,6 +79,7 @@ export class UIManager {
     this.buildOnline();
     this.applyTheme();
     this.updateStats();
+    this.updateNewsBadge();
     this.subscribe();
     this.switchTab(this.activeTab);
   }
@@ -105,6 +109,7 @@ export class UIManager {
       this.notify.show({ title: 'Gespeichert', icon: '💾', kind: 'success', duration: 2000 });
     });
     this.$('btn-mute').addEventListener('click', () => this.toggleMute());
+    this.$('btn-news').addEventListener('click', () => this.openNews());
     this.$('daily-bonus').addEventListener('click', () => this.handleDaily());
 
     this.$('modal-layer').addEventListener('click', (e) => {
@@ -629,6 +634,82 @@ export class UIManager {
         <div class="ach-bonus">+${((a.bonus - 1) * 100).toFixed(0)} % Einnahmen</div>`;
       container.appendChild(card);
     }
+  }
+
+  // === News / Updates =====================================================
+  /** Entries sorted newest-first by announcement date (stable on ties). */
+  private sortedNews(): NewsEntry[] {
+    return [...NEWS_ENTRIES].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  }
+
+  private lastSeenNewsId(): string | null {
+    try { return localStorage.getItem(this.newsSeenKey); } catch { return null; }
+  }
+
+  /** How many entries are newer than the one the player last acknowledged. */
+  unseenNewsCount(): number {
+    const list = this.sortedNews();
+    const seen = this.lastSeenNewsId();
+    if (!seen) return list.length;
+    const idx = list.findIndex((n) => n.id === seen);
+    return idx < 0 ? list.length : idx;
+  }
+
+  /** Remember the newest entry as seen, so the unread badge clears. */
+  private markNewsSeen(): void {
+    const newest = this.sortedNews()[0];
+    if (newest) { try { localStorage.setItem(this.newsSeenKey, newest.id); } catch { /* private mode — ignore */ } }
+  }
+
+  updateNewsBadge(): void {
+    const badge = this.$('news-badge');
+    const n = this.unseenNewsCount();
+    badge.hidden = n === 0;
+    if (n > 0) badge.textContent = n > 9 ? '9+' : String(n);
+  }
+
+  /** Auto-open once on boot when there's unseen news and no other modal is up. */
+  maybeAutoShowNews(): void {
+    if (this.unseenNewsCount() > 0 && this.$('modal-layer').hidden) this.openNews();
+  }
+
+  openNews(): void {
+    const list = this.sortedNews();
+    const seen = this.lastSeenNewsId();
+    const seenIdx = seen ? list.findIndex((n) => n.id === seen) : -1;
+    const unread = (n: NewsEntry): boolean => seenIdx < 0 || list.indexOf(n) < seenIdx;
+
+    const card = (n: NewsEntry): string => {
+      const meta = NEWS_TYPE_META[n.type];
+      const items = n.items.map((t) => `<li>${escapeHtml(t)}</li>`).join('');
+      return `
+        <article class="news-entry ${n.type}${unread(n) ? ' unread' : ''}">
+          <div class="news-entry-head">
+            <span class="news-entry-icon">${meta.icon}</span>
+            <span class="news-entry-title">${escapeHtml(n.title)}</span>
+            ${n.tag ? `<span class="news-tag">${escapeHtml(n.tag)}</span>` : ''}
+            <span class="news-entry-date">${escapeHtml(formatDate(n.date))}</span>
+          </div>
+          ${n.eta ? `<span class="news-eta">⏳ ${escapeHtml(n.eta)}</span>` : ''}
+          <ul class="news-items">${items}</ul>
+        </article>`;
+    };
+
+    const upcoming = list.filter((n) => n.type === 'upcoming');
+    const history = list.filter((n) => n.type !== 'upcoming');
+    this.openModal(`
+      <h2>📰 Neuigkeiten</h2>
+      ${upcoming.length ? `<h3>🔜 Bald verfügbar</h3><div class="news-list">${upcoming.map(card).join('')}</div>` : ''}
+      <h3>📋 Änderungsverlauf</h3>
+      <div class="news-list">${history.map(card).join('')}</div>
+      <div class="modal-actions">
+        <button class="btn-prestige" data-act="close">Alles klar</button>
+      </div>`);
+    (this.$('modal-layer').querySelector('[data-act="close"]') as HTMLElement).onclick = () => this.closeModal();
+
+    // Mark as read after rendering (so the "neu" markers still show this time).
+    this.markNewsSeen();
+    this.updateNewsBadge();
   }
 
   // === Online =============================================================

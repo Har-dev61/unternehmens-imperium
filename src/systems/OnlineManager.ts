@@ -131,6 +131,25 @@ export class OnlineManager {
     this.serverFailed(e);                    // unreachable → caller falls back to simulation
   }
 
+  // === Resources (Phase 2 — server-authoritative) =========================
+  /** Static registry: which world produces what, building costs/rates. */
+  async fetchResourceConfig(): Promise<any> {
+    if (!this.serverUrl) throw new Error('Kein Server konfiguriert.');
+    return this.api('/api/resources/config');
+  }
+
+  /** The player's settled stocks + current rates + owned buildings. */
+  async fetchResources(): Promise<any> {
+    if (!this.usingServer) throw new Error('Dafür musst du online angemeldet sein.');
+    return this.api('/api/resources', { auth: true });
+  }
+
+  /** Buy a resource building (paid with resources; validated server-side). */
+  async buildResource(buildingId: string, quantity = 1): Promise<any> {
+    if (!this.usingServer) throw new Error('Dafür musst du online angemeldet sein.');
+    return this.api('/api/resources/build', { method: 'POST', body: { buildingId, quantity }, auth: true });
+  }
+
   logout(): void {
     this.token = null;
     localStorage.removeItem(this.storageKey + '-token');

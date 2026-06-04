@@ -50,6 +50,26 @@ db.exec(`
     updated_at INTEGER NOT NULL
   );
 
+  /* --- Server-authoritative resource economy (Phase 2) --- */
+  CREATE TABLE IF NOT EXISTS player_resources (
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    type    TEXT NOT NULL,
+    amount  REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, type)
+  );
+
+  CREATE TABLE IF NOT EXISTS player_buildings (
+    user_id     INTEGER NOT NULL REFERENCES users(id),
+    building_id TEXT NOT NULL,
+    count       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, building_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS resource_state (
+    user_id   INTEGER PRIMARY KEY REFERENCES users(id),
+    last_tick INTEGER NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_users_token ON users(token);
   CREATE INDEX IF NOT EXISTS idx_lb_valuation ON leaderboard(valuation DESC);
   /* Partial unique index: at most one account per e-mail, but many NULLs
@@ -107,7 +127,30 @@ const stmts = {
   topLb: db.prepare(
     'SELECT user_id, name, valuation, prestige FROM leaderboard ORDER BY valuation DESC LIMIT ?'
   ),
+  // --- Resources (Phase 2) ---
+  resTick: db.prepare('SELECT last_tick FROM resource_state WHERE user_id = ?'),
+  setResTick: db.prepare(
+    `INSERT INTO resource_state (user_id, last_tick) VALUES (?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET last_tick = excluded.last_tick`
+  ),
+  resAll: db.prepare('SELECT type, amount FROM player_resources WHERE user_id = ?'),
+  resUpsert: db.prepare(
+    `INSERT INTO player_resources (user_id, type, amount) VALUES (?, ?, ?)
+     ON CONFLICT(user_id, type) DO UPDATE SET amount = excluded.amount`
+  ),
+  bldAll: db.prepare('SELECT building_id, count FROM player_buildings WHERE user_id = ?'),
+  bldUpsert: db.prepare(
+    `INSERT INTO player_buildings (user_id, building_id, count) VALUES (?, ?, ?)
+     ON CONFLICT(user_id, building_id) DO UPDATE SET count = excluded.count`
+  ),
 };
+
+/** Run `fn` inside an immediate (write-locking) transaction; rolls back on throw. */
+export function tx(fn) {
+  db.exec('BEGIN IMMEDIATE');
+  try { const r = fn(); db.exec('COMMIT'); return r; }
+  catch (e) { try { db.exec('ROLLBACK'); } catch { /* already rolled back */ } throw e; }
+}
 
 export const queries = {
   getUserById: (id) => stmts.userById.get(id),
@@ -137,6 +180,13 @@ export const queries = {
   upsertLeaderboard: (userId, name, valuation, prestige) =>
     stmts.upsertLb.run(userId, name, valuation, prestige, Date.now()),
   getLeaderboard: (limit = 50) => stmts.topLb.all(limit),
+  // --- Resources (Phase 2) ---
+  getResourceTick: (userId) => stmts.resTick.get(userId)?.last_tick,
+  setResourceTick: (userId, t) => stmts.setResTick.run(userId, t),
+  getResources: (userId) => stmts.resAll.all(userId),            // [{ type, amount }]
+  setResource: (userId, type, amount) => stmts.resUpsert.run(userId, type, amount),
+  getBuildings: (userId) => stmts.bldAll.all(userId),            // [{ building_id, count }]
+  setBuilding: (userId, buildingId, count) => stmts.bldUpsert.run(userId, buildingId, count),
 };
 
 /** Seed a handful of AI rivals once, so a fresh leaderboard isn't empty. */

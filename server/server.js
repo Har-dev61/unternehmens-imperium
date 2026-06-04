@@ -21,8 +21,9 @@
 import express from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { queries, seedRivalsIfEmpty } from './db.js';
+import { queries, tx, seedRivalsIfEmpty } from './db.js';
 import { sendVerification, sendPasswordReset, DEV_RETURN_TOKENS } from './mailer.js';
+import * as resources from './resources.js';
 
 const PORT = process.env.PORT ?? 3000;
 // In production bind to 127.0.0.1 so the backend is only reachable through the
@@ -327,6 +328,26 @@ function currentEvents() {
 }
 
 app.get('/api/events', (_req, res) => res.json({ events: currentEvents() }));
+
+// --- Resources (Phase 2, server-authoritative) -----------------------------
+// Static registry (which world produces what, building costs/rates).
+app.get('/api/resources/config', (_req, res) => res.json(resources.config()));
+
+// The player's settled stocks + current rates + owned buildings.
+app.get('/api/resources', requireAuth, (req, res) => {
+  res.json(tx(() => resources.snapshot(req.user.id)));
+});
+
+// Buy a resource building (paid with resources; validated server-side).
+app.post('/api/resources/build', requireAuth, (req, res) => {
+  const { buildingId, quantity } = req.body ?? {};
+  const result = tx(() => {
+    const r = resources.purchase(req.user.id, String(buildingId ?? ''), quantity);
+    return r.error ? r : { ok: true, ...resources.snapshot(req.user.id) };
+  });
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.json(result);
+});
 
 // --- Health ----------------------------------------------------------------
 app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));

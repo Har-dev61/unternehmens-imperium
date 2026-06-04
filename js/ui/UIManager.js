@@ -21,6 +21,13 @@ export class UIManager {
     goldenEl = null;
     /** localStorage key remembering the newest news entry the player has opened. */
     newsSeenKey = 'imperium-news-seen';
+    // Resources (Phase 2): cached static registry + last server snapshot, which
+    // the UI extrapolates client-side between syncs for a smooth ticking display.
+    resourceConfig = null;
+    resourceState = null;
+    resIconMap = {};
+    resNameMap = {};
+    resourceSyncAccum = 0;
     clickButton;
     shopList;
     floatLayer;
@@ -144,7 +151,8 @@ export class UIManager {
         this.bus.on('event:started', (e) => {
             this.notify.show({ title: e.name, text: `×${e.multiplier} Einnahmen`, icon: '🎉', kind: 'rare', duration: 5000 });
         });
-        this.bus.on('online:session', () => this.buildOnline());
+        this.bus.on('online:session', () => { this.buildOnline(); if (this.activeTab === 'resources')
+            void this.buildResources(); });
         this.bus.on('online:expired', () => this.notify.show({
             title: 'Sitzung abgelaufen', text: 'Bitte melde dich erneut an.', icon: '🔑', kind: 'info', duration: 6000,
         }));
@@ -178,6 +186,8 @@ export class UIManager {
         this.updateStats();
         this.refreshShopRows();
         this.refreshBoosts();
+        if (this.activeTab === 'resources')
+            this.refreshResourceAmounts(); // smooth ticking
         this.throttle += dt;
         if (this.throttle >= 0.4) {
             this.throttle = 0;
@@ -189,6 +199,13 @@ export class UIManager {
                 this.refreshQuests();
             if (this.activeTab === 'research')
                 this.refreshResearch();
+            if (this.activeTab === 'resources') {
+                this.resourceSyncAccum += 0.4;
+                if (this.resourceSyncAccum >= 20) {
+                    this.resourceSyncAccum = 0;
+                    void this.syncResources();
+                }
+            }
         }
     }
     updateStats() {
@@ -951,6 +968,116 @@ export class UIManager {
             }
         };
     }
+    // === Resources (Phase 2) ================================================
+    /** Build/refresh the Rohstoffe tab (locked unless connected to the server). */
+    async buildResources() {
+        const container = this.$('resources-content');
+        const om = this.game.onlineManager;
+        if (!om.usingServer) {
+            this.resourceState = null;
+            container.innerHTML = `
+        <div class="res-locked">
+          <p>🔒 Rohstoffe werden serverseitig produziert, gelagert und gehandelt.</p>
+          <p class="hint">Melde dich mit einem Konto (oder als Gast) an, um zu starten.</p>
+          <button data-act="res-auth">🔐 Anmelden / Registrieren</button>
+        </div>`;
+            container.querySelector('[data-act="res-auth"]')?.addEventListener('click', () => this.openAuthModal());
+            return;
+        }
+        try {
+            if (!this.resourceConfig) {
+                this.resourceConfig = await om.fetchResourceConfig();
+                for (const w of this.resourceConfig.worlds) {
+                    for (const r of w.resources) {
+                        this.resIconMap[r.type] = r.icon;
+                        this.resNameMap[r.type] = r.name;
+                    }
+                }
+            }
+            const snap = await om.fetchResources();
+            this.resourceState = { resources: snap.resources, rates: snap.rates, buildings: snap.buildings, fetchedAt: Date.now() };
+            this.renderResources();
+        }
+        catch (e) {
+            container.innerHTML = `<p class="empty">Rohstoffe konnten nicht geladen werden: ${escapeHtml(e.message)}</p>`;
+        }
+    }
+    renderResources() {
+        const cfg = this.resourceConfig, st = this.resourceState;
+        if (!cfg || !st)
+            return;
+        const container = this.$('resources-content');
+        let html = '';
+        for (const w of cfg.worlds) {
+            const stocks = w.resources.map((r) => `<div class="res-chip"><span class="res-ico">${r.icon}</span><b class="res-amt" data-res="${r.type}">0</b><span class="res-rate" data-rate="${r.type}"></span></div>`).join('');
+            const blds = cfg.buildings.filter((b) => b.world === w.world).map((b) => {
+                const count = st.buildings[b.id] ?? 0;
+                return `<button class="res-build" data-build="${b.id}">
+          <span class="rb-icon">${this.resIconMap[b.produces] ?? '📦'}</span>
+          <span class="rb-main">
+            <span class="rb-name">${escapeHtml(b.name)}</span>
+            <span class="rb-prod">+${formatNumber(b.rate, 2)}/s ${escapeHtml(this.resNameMap[b.produces] ?? b.produces)} · <span data-count="${b.id}">×${count}</span></span>
+          </span>
+          <span class="rb-cost" data-cost="${b.id}"></span>
+        </button>`;
+            }).join('');
+            html += `<div class="res-world"><h3>${escapeHtml(w.name)}</h3><div class="res-stocks">${stocks}</div><div class="res-buildings">${blds}</div></div>`;
+        }
+        container.innerHTML = html;
+        container.querySelectorAll('[data-build]').forEach((btn) => btn.addEventListener('click', () => this.handleBuildResource(btn.dataset.build)));
+        this.refreshResourceAmounts();
+    }
+    /** Cost of the NEXT unit (geometric in the owned count) — mirrors the server. */
+    resBuildingCost(b, owned) {
+        const g = b.growth ?? 1.15;
+        const f = Math.pow(g, owned);
+        const cost = {};
+        for (const [t, base] of Object.entries(b.cost))
+            cost[t] = base * f;
+        return cost;
+    }
+    /** Per-frame: extrapolate stocks from the last snapshot + show affordability. */
+    refreshResourceAmounts() {
+        const cfg = this.resourceConfig, st = this.resourceState;
+        if (!cfg || !st)
+            return;
+        const container = this.$('resources-content');
+        const elapsed = (Date.now() - st.fetchedAt) / 1000;
+        const cur = {};
+        for (const type of Object.keys(st.resources))
+            cur[type] = st.resources[type] + (st.rates[type] ?? 0) * elapsed;
+        container.querySelectorAll('[data-res]').forEach((el) => { el.textContent = formatNumber(cur[el.dataset.res] ?? 0); });
+        container.querySelectorAll('[data-rate]').forEach((el) => { el.textContent = `+${formatNumber(st.rates[el.dataset.rate] ?? 0, 2)}/s`; });
+        for (const b of cfg.buildings) {
+            const cost = this.resBuildingCost(b, st.buildings[b.id] ?? 0);
+            const costEl = container.querySelector(`[data-cost="${b.id}"]`);
+            if (costEl)
+                costEl.innerHTML = Object.entries(cost).map(([t, a]) => `${this.resIconMap[t] ?? ''} ${formatNumber(a)}`).join(' · ');
+            const affordable = Object.entries(cost).every(([t, a]) => (cur[t] ?? 0) >= a);
+            container.querySelector(`[data-build="${b.id}"]`)?.classList.toggle('affordable', affordable);
+        }
+    }
+    async handleBuildResource(buildingId) {
+        try {
+            const snap = await this.game.onlineManager.buildResource(buildingId, 1);
+            this.resourceState = { resources: snap.resources, rates: snap.rates, buildings: snap.buildings, fetchedAt: Date.now() };
+            this.renderResources();
+            this.playSound(560, 0.05);
+        }
+        catch (e) {
+            this.notify.show({ title: 'Bau fehlgeschlagen', text: e.message, icon: '⚠️', kind: 'error' });
+        }
+    }
+    /** Quietly re-fetch the authoritative snapshot (also settles server-side). */
+    async syncResources() {
+        if (!this.game.onlineManager.usingServer)
+            return;
+        try {
+            const snap = await this.game.onlineManager.fetchResources();
+            this.resourceState = { resources: snap.resources, rates: snap.rates, buildings: snap.buildings, fetchedAt: Date.now() };
+        }
+        catch { /* offline blip — keep extrapolating from the last snapshot */ }
+    }
     async cloudSync() {
         try {
             await this.game.onlineManager.syncSave(this.game.serialize());
@@ -1088,6 +1215,10 @@ export class UIManager {
             this.refreshQuests();
         if (tab === 'research')
             this.refreshResearch();
+        if (tab === 'resources') {
+            this.resourceSyncAccum = 0;
+            void this.buildResources();
+        }
     }
     applyTheme() {
         document.body.dataset.theme = this.game.getActiveWorld()?.theme ?? 'local';

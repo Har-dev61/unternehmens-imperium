@@ -1007,7 +1007,8 @@ export class UIManager {
       </div>
       <h3>🏆 Bestenliste (Firmenwert)</h3>
       <button data-act="refresh" class="btn-ghost small">Aktualisieren</button>
-      <div id="leaderboard" class="leaderboard"><p class="empty">Lade …</p></div>`;
+      <div id="leaderboard" class="leaderboard"><p class="empty">Lade …</p></div>
+      ${om.session.isDev ? '<div id="dev-panel"></div>' : ''}`;
         const on = (act, fn) => {
             const btn = container.querySelector(`[data-act="${act}"]`);
             if (btn)
@@ -1040,6 +1041,94 @@ export class UIManager {
             }
         });
         this.refreshLeaderboard();
+        if (om.session.isDev)
+            void this.renderDevPanel();
+    }
+    // === Dev panel (only rendered for the server-defined dev account) ========
+    /** The server enforces the dev gate; this menu is just convenience/UX. */
+    async renderDevPanel() {
+        const om = this.game.onlineManager;
+        const host = document.getElementById('dev-panel');
+        if (!host || !om.session.isDev)
+            return;
+        if (!this.lootboxConfig) {
+            try {
+                this.lootboxConfig = await om.fetchLootboxConfig();
+            }
+            catch { /* item select stays empty */ }
+        }
+        const itemOpts = (this.lootboxConfig?.items ?? []).map((it) => `<option value="${escapeAttr(it.id)}">${escapeHtml(it.worldName)} · ${escapeHtml(this.rarityMeta(it.rarity).name)} — ${escapeHtml(it.name)}</option>`).join('');
+        host.innerHTML = `
+      <div class="dev-panel">
+        <h3>🛠️ Dev-Werkzeuge</h3>
+        <div class="dev-row">
+          <input id="dev-money" type="number" min="0" step="1" value="1000000">
+          <button class="btn-ghost small" data-act="dev-money">💰 Geld gutschreiben</button>
+        </div>
+        <div class="dev-row">
+          <select id="dev-item">${itemOpts}</select>
+          <input id="dev-item-n" type="number" min="1" step="1" value="1">
+          <button class="btn-ghost small" data-act="dev-item">🎁 Item</button>
+        </div>
+        <div class="dev-row">
+          <button class="btn-ghost small" data-act="dev-reset">♻️ Account zurücksetzen</button>
+        </div>
+      </div>`;
+        host.querySelector('[data-act="dev-money"]').addEventListener('click', async () => {
+            const amount = Number(host.querySelector('#dev-money').value);
+            try {
+                await om.devGrantMoney(amount);
+                await this.reconcileEconomy();
+                this.notify.show({ title: 'Geld gutgeschrieben', text: formatMoney(amount), icon: '💰', kind: 'success' });
+            }
+            catch (e) {
+                this.notify.show({ title: 'Dev-Fehler', text: e.message, icon: '⚠️', kind: 'error' });
+            }
+        });
+        host.querySelector('[data-act="dev-item"]').addEventListener('click', async () => {
+            const itemId = host.querySelector('#dev-item').value;
+            const count = Math.max(1, Math.floor(Number(host.querySelector('#dev-item-n').value)) || 1);
+            try {
+                const r = await om.devGrantItem(itemId, count);
+                if (r.items)
+                    this.lootboxItems = r.items;
+                if (this.activeTab === 'lootbox')
+                    this.renderLootboxInventory();
+                this.notify.show({ title: 'Item gutgeschrieben', text: `${this.itemName(itemId)} ×${count}`, icon: '🎁', kind: 'success' });
+            }
+            catch (e) {
+                this.notify.show({ title: 'Dev-Fehler', text: e.message, icon: '⚠️', kind: 'error' });
+            }
+        });
+        host.querySelector('[data-act="dev-reset"]').addEventListener('click', () => this.confirmDevReset());
+    }
+    confirmDevReset() {
+        this.openModal(`
+      <h2>♻️ Dev: Account zurücksetzen?</h2>
+      <p>Setzt <b>Ökonomie</b> (Geld, Assets, Upgrades, Prestige) und das gesamte <b>Inventar</b>
+         (Rohstoffe + Prestige-Items) dieses Dev-Accounts auf null zurück.</p>
+      <div class="modal-actions">
+        <button class="btn-ghost" data-act="cancel">Abbrechen</button>
+        <button class="btn-prestige" data-act="confirm">Zurücksetzen</button>
+      </div>`);
+        const m = this.$('modal-layer');
+        m.querySelector('[data-act="cancel"]').onclick = () => this.closeModal();
+        m.querySelector('[data-act="confirm"]').onclick = async () => {
+            try {
+                await this.game.onlineManager.devReset();
+                this.lootboxItems = {};
+                const fresh = await this.game.onlineManager.fetchEconomy();
+                this.mirrorEconomy(fresh.save, false);
+                this.refreshAll();
+                if (this.activeTab === 'lootbox')
+                    void this.buildLootbox();
+                this.notify.show({ title: 'Account zurückgesetzt', icon: '♻️', kind: 'success' });
+            }
+            catch (e) {
+                this.notify.show({ title: 'Dev-Fehler', text: e.message, icon: '⚠️', kind: 'error' });
+            }
+            this.closeModal();
+        };
     }
     /** Small helper: write a status line into an open auth modal. */
     authMsg(text, kind = 'error') {

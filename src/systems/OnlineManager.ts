@@ -116,7 +116,7 @@ export class OnlineManager {
       const me = await this.api('/api/auth/me', { auth: true });
       this.session = {
         mode: me.mode ?? 'account', username: me.username,
-        email: me.email ?? null, emailVerified: !!me.emailVerified, lastSync: 0,
+        email: me.email ?? null, emailVerified: !!me.emailVerified, isDev: !!me.isDev, lastSync: 0,
       };
       this.usingServer = true;
       this.serverReachable = true;
@@ -250,6 +250,20 @@ export class OnlineManager {
   async openLootbox(boxType: string, world = ''): Promise<any> {
     this.requireServer();
     return this.api('/api/lootbox/open', { method: 'POST', body: { boxType, world }, auth: true });
+  }
+
+  // === Dev tools (server enforces the dev gate; 403 for everyone else) =====
+  async devGrantMoney(amount: number): Promise<any> {
+    this.requireServer();
+    return this.api('/api/dev/grant-money', { method: 'POST', body: { amount }, auth: true });
+  }
+  async devGrantItem(itemId: string, count = 1): Promise<any> {
+    this.requireServer();
+    return this.api('/api/dev/grant-item', { method: 'POST', body: { itemId, count }, auth: true });
+  }
+  async devReset(): Promise<any> {
+    this.requireServer();
+    return this.api('/api/dev/reset', { method: 'POST', body: {}, auth: true });
   }
 
   // === Trading lobbies (Phase 3) ==========================================
@@ -410,7 +424,7 @@ export class OnlineManager {
     localStorage.setItem(this.storageKey + '-token', r.token);
     this.session = {
       mode: r.mode ?? 'account', username: r.username,
-      email: r.email ?? null, emailVerified: !!r.emailVerified, lastSync: 0,
+      email: r.email ?? null, emailVerified: !!r.emailVerified, isDev: !!r.isDev, lastSync: 0,
     };
     this.usingServer = true;
     this.serverReachable = true;

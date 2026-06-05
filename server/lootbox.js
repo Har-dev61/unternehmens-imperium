@@ -166,6 +166,15 @@ export function inventory(userId) {
   return { items };
 }
 
+/** Dev only: grant `count` of an item directly (caller enforces the dev gate). */
+export function grantItem(userId, itemId, count = 1) {
+  if (!ITEM_IDS.has(itemId)) return { error: 'Unbekanntes Item.' };
+  const n = Math.max(1, Math.floor(count) || 1);
+  const have = itemMap(queries.getItems(userId));
+  queries.setItem(userId, itemId, (have[itemId] ?? 0) + n);
+  return { ok: true, granted: { id: itemId, count: n }, ...inventory(userId) };
+}
+
 /** Normalized drop odds (%) per box, for transparent display in the client. */
 function oddsOf(weights) {
   const total = RARITY_IDS.reduce((s, id) => s + (weights[id] ?? 0), 0) || 1;

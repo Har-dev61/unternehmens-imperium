@@ -575,6 +575,18 @@ h3 { font-size: 0.95rem; margin: 0.9rem 0 0.5rem; color: var(--muted); text-tran
 .lb-actions .btn-prestige { width: auto; padding: 0.6rem 1.6rem; }
 @keyframes lbpop { from { transform: scale(0.7); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 
+/* ===== Dev tools (only rendered for the dev account) ===== */
+.dev-panel { margin-top: 1rem; border: 1px dashed var(--warn); border-radius: 12px; padding: 0.8rem;
+  background: color-mix(in srgb, var(--warn) 8%, var(--panel-2)); }
+.dev-panel h3 { margin: 0 0 0.6rem; font-size: 0.9rem; }
+.dev-row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; }
+.dev-row input, .dev-row select { background: var(--panel-3); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text); padding: 0.4rem 0.5rem; font-family: inherit; font-size: 0.85rem; }
+.dev-row #dev-money { flex: 1; min-width: 8rem; }
+.dev-row #dev-item { flex: 1; min-width: 10rem; }
+.dev-row #dev-item-n { width: 4.5rem; }
+.dev-row button { white-space: nowrap; }
+
 /* ===== Toasts ===== */
 .toast-container { position: fixed; bottom: 1rem; right: 1rem; z-index: 60; display: flex; flex-direction: column; gap: 0.5rem; max-width: 320px; }
 .toast { display: flex; gap: 0.6rem; align-items: center; background: var(--panel); border: 1px solid var(--border);

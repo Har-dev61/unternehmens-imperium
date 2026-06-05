@@ -125,6 +125,37 @@ function requireAuth(req, res, next) {
   next();
 }
 
+// --- Dev account (env-defined; OFF unless DEV_USERNAME + DEV_PASSWORD set) --
+// A single privileged account for testing. Its dev powers are enforced HERE
+// (server-side); the client only hides the menu — it can never grant itself.
+const DEV_USERNAME = process.env.DEV_USERNAME || null;
+const isDev = (user) => !!(DEV_USERNAME && user && user.username === DEV_USERNAME);
+
+/** Middleware: require the caller to be the dev account. */
+function requireDev(req, res, next) {
+  if (!isDev(req.user)) return res.status(403).json({ error: 'Nur für den Dev-Account.' });
+  next();
+}
+
+/** Ensure the env-defined dev account exists with the env password (synced each boot). */
+function ensureDevAccount() {
+  const pw = process.env.DEV_PASSWORD;
+  if (!DEV_USERNAME || !pw) return;
+  const { salt, hash } = hashPassword(pw);
+  const existing = queries.getUserByName(DEV_USERNAME);
+  if (!existing) {
+    queries.createUser({
+      username: DEV_USERNAME, email: null, passwordHash: hash, salt,
+      token: makeToken(), tokenExpires: tokenExpiry(), emailVerified: 1, isGuest: 0,
+    });
+    console.log(`[dev] created dev account "${DEV_USERNAME}"`);
+  } else {
+    // Keep the login password in sync with the env (rotates the token).
+    queries.updatePassword(existing.id, hash, salt, makeToken(), tokenExpiry());
+    console.log(`[dev] dev account "${DEV_USERNAME}" ready`);
+  }
+}
+
 /** Optional auth: attach req.user if a valid token is present, never reject. */
 function optionalAuth(req, _res, next) {
   req.user = userFromRequest(req);
@@ -137,6 +168,7 @@ const accountPayload = (user, token) => ({
   email: user.email ?? null,
   emailVerified: !!user.email_verified,
   mode: 'account',
+  isDev: isDev(user),
   token,
   expiresIn: TOKEN_TTL,
 });
@@ -245,7 +277,7 @@ app.post('/api/auth/reset', authLimiter, (req, res) => {
 // Current session info (used by the client to refresh verification status).
 app.get('/api/auth/me', requireAuth, (req, res) => {
   const u = req.user;
-  res.json({ username: u.username, email: u.email ?? null, emailVerified: !!u.email_verified, mode: u.is_guest ? 'guest' : 'account' });
+  res.json({ username: u.username, email: u.email ?? null, emailVerified: !!u.email_verified, mode: u.is_guest ? 'guest' : 'account', isDev: isDev(u) });
 });
 
 // --- Cloud saves -----------------------------------------------------------
@@ -396,6 +428,23 @@ app.post('/api/lootbox/open', requireAuth, (req, res) => {
   res.json(r);
 });
 
+// --- Dev tools (env-gated; only the dev account may call these) ------------
+// Server-enforced: requireDev rejects everyone else with 403, so hiding the
+// client menu is convenience, not the security boundary.
+app.post('/api/dev/grant-money', requireAuth, requireDev, (req, res) => {
+  const amount = Number(req.body?.amount);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1e30) return res.status(400).json({ error: 'Ungültiger Betrag.' });
+  res.json(tx(() => { economy.addMoney(req.user.id, amount); return economy.snapshot(req.user.id); }));
+});
+app.post('/api/dev/grant-item', requireAuth, requireDev, (req, res) => {
+  const r = tx(() => lootbox.grantItem(req.user.id, String(req.body?.itemId ?? ''), Number(req.body?.count) || 1));
+  if (r.error) return res.status(400).json(r);
+  res.json(r);
+});
+app.post('/api/dev/reset', requireAuth, requireDev, (req, res) => {
+  res.json(tx(() => { queries.resetPlayer(req.user.id); return { ok: true, ...economy.snapshot(req.user.id) }; }));
+});
+
 // --- Trading lobbies (Phase 3) ---------------------------------------------
 // NB: /history is registered before /:id so it isn't captured as an id.
 app.get('/api/lobbies', requireAuth, (req, res) => res.json({ lobbies: trade.listLobbies(req.query.search ?? '') }));
@@ -447,6 +496,7 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
 // --- Start -----------------------------------------------------------------
 seedRivalsIfEmpty();
+ensureDevAccount();
 // Periodically cancel idle trade lobbies and refund their escrow.
 setInterval(() => { try { trade.sweepExpired(); } catch (e) { console.warn('[trade] sweep failed:', e.message); } }, 60_000);
 const server = app.listen(PORT, HOST, () => {

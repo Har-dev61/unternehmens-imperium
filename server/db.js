@@ -214,6 +214,13 @@ const stmts = {
     `INSERT INTO player_items (user_id, item_id, count) VALUES (?, ?, ?)
      ON CONFLICT(user_id, item_id) DO UPDATE SET count = excluded.count`
   ),
+  // Dev reset: wipe one player's authoritative state (economy + all inventories).
+  delEconomy: db.prepare('DELETE FROM player_economy WHERE user_id = ?'),
+  delItems: db.prepare('DELETE FROM player_items WHERE user_id = ?'),
+  delResources: db.prepare('DELETE FROM player_resources WHERE user_id = ?'),
+  delBuildings: db.prepare('DELETE FROM player_buildings WHERE user_id = ?'),
+  delEnergy: db.prepare('DELETE FROM player_energy WHERE user_id = ?'),
+  delResState: db.prepare('DELETE FROM resource_state WHERE user_id = ?'),
   energyGet: db.prepare('SELECT energy, last_tick FROM player_energy WHERE user_id = ? AND world = ?'),
   energySet: db.prepare(
     `INSERT INTO player_energy (user_id, world, energy, last_tick) VALUES (?, ?, ?, ?)
@@ -300,6 +307,11 @@ export const queries = {
   setBuilding: (userId, buildingId, count) => stmts.bldUpsert.run(userId, buildingId, count),
   getItems: (userId) => stmts.itemAll.all(userId),               // [{ item_id, count }]
   setItem: (userId, itemId, count) => stmts.itemUpsert.run(userId, itemId, count),
+  /** Dev reset: delete a player's economy + all inventories (defaults regenerate lazily). */
+  resetPlayer: (userId) => {
+    stmts.delEconomy.run(userId); stmts.delItems.run(userId); stmts.delResources.run(userId);
+    stmts.delBuildings.run(userId); stmts.delEnergy.run(userId); stmts.delResState.run(userId);
+  },
   getEnergy: (userId, world) => stmts.energyGet.get(userId, world),
   setEnergy: (userId, world, energy, lastTick) => stmts.energySet.run(userId, world, energy, lastTick),
   getMeta: (key) => stmts.metaGet.get(key)?.value ?? null,

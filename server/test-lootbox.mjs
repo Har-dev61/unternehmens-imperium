@@ -116,6 +116,16 @@ try {
   ok(lootbox.inventory(A).items['item_tech_rare'] === 0, 'item moved into escrow');
   tx(() => trade.leaveLobby(A, l2));
   ok(lootbox.inventory(A).items['item_tech_rare'] === 1, 'leaving refunds the escrowed item');
+
+  // --- Dev helpers: grant + reset (the endpoint dev-gate is enforced in server.js) ---
+  const dev = mkUser('devtest');
+  ok(lootbox.grantItem(dev, 'item_finance_mythic', 3).ok && lootbox.inventory(dev).items['item_finance_mythic'] === 3, 'grantItem credits items');
+  ok(lootbox.grantItem(dev, 'nope', 1).error, 'grantItem rejects an unknown item');
+  economy.addMoney(dev, 12345);
+  ok(economy.getMoney(dev) >= 12345, 'dev has money before reset');
+  queries.resetPlayer(dev);
+  ok(economy.getMoney(dev) === 0, 'resetPlayer wipes economy money');
+  ok(Object.values(lootbox.inventory(dev).items).every((c) => c === 0), 'resetPlayer wipes items');
 } catch (err) {
   fail++; console.error('  ✗ unexpected error:', err);
 } finally {

@@ -134,6 +134,8 @@ export interface OnlineSession {
   username: string | null;
   email?: string | null;
   emailVerified?: boolean;
+  /** True only for the server-defined dev account (drives the hidden dev menu). */
+  isDev?: boolean;
   lastSync: number;
 }
 

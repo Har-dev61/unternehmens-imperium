@@ -206,6 +206,23 @@ export class OnlineManager {
         this.requireServer();
         return this.api('/api/economy/quest', { method: 'POST', body: { id }, auth: true });
     }
+    // === Lootboxes (cosmetic prestige items, server-authoritative) ==========
+    /** Static catalogue: rarities, box types + odds, item registry, worlds. */
+    async fetchLootboxConfig() {
+        if (!this.serverUrl)
+            throw new Error('Kein Server konfiguriert.');
+        return this.api('/api/lootbox/config');
+    }
+    /** The player's owned cosmetic items. */
+    async fetchLootboxInventory() {
+        this.requireServer();
+        return this.api('/api/lootbox/inventory', { auth: true });
+    }
+    /** Buy + open one box. Server spends the money and decides the item (CSPRNG). */
+    async openLootbox(boxType, world = '') {
+        this.requireServer();
+        return this.api('/api/lootbox/open', { method: 'POST', body: { boxType, world }, auth: true });
+    }
     // === Trading lobbies (Phase 3) ==========================================
     requireServer() { if (!this.usingServer)
         throw new Error('Dafür musst du online angemeldet sein.'); }

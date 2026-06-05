@@ -17,6 +17,7 @@
 import { randomBytes } from 'node:crypto';
 import { queries, tx } from './db.js';
 import { RESOURCE_TYPES } from './resources.js';
+import { ITEM_IDS } from './lootbox.js';
 import * as economy from './economy.js';
 
 const MAX_OPEN_PER_USER = Number(process.env.TRADE_MAX_OPEN ?? 3);
@@ -24,12 +25,15 @@ const LOBBY_TTL_MS = Number(process.env.TRADE_LOBBY_TTL_MS ?? 30 * 60 * 1000);
 
 const RES_SET = new Set(RESOURCE_TYPES);
 const bag = (userId) => Object.fromEntries(queries.getResources(userId).map((r) => [r.type, r.amount]));
+const itemBag = (userId) => Object.fromEntries(queries.getItems(userId).map((r) => [r.item_id, r.count]));
 
-/** Escrow JSON → { resources:{type:amt}, money:N }. Tolerates the legacy flat format. */
+/** Escrow JSON → { resources, money, items }. Tolerates the legacy flat format. */
 function parseEscrow(json) {
   const e = JSON.parse(json || '{}');
-  if (e && typeof e === 'object' && ('resources' in e || 'money' in e)) return { resources: e.resources ?? {}, money: Number(e.money ?? 0) };
-  return { resources: e ?? {}, money: 0 };
+  if (e && typeof e === 'object' && ('resources' in e || 'money' in e || 'items' in e)) {
+    return { resources: e.resources ?? {}, money: Number(e.money ?? 0), items: e.items ?? {} };
+  }
+  return { resources: e ?? {}, money: 0, items: {} };
 }
 
 /** Add {type: amount} resources to a player's bag (delivery + refunds). */
@@ -38,9 +42,16 @@ function credit(userId, deltas) {
   for (const [t, a] of Object.entries(deltas)) if (a) queries.setResource(userId, t, (cur[t] ?? 0) + a);
 }
 
-/** Give a player an escrowed bundle (resources + money). */
+/** Add {itemId: count} cosmetic items to a player's inventory. */
+function creditItems(userId, deltas) {
+  const cur = itemBag(userId);
+  for (const [id, n] of Object.entries(deltas)) if (n) queries.setItem(userId, id, (cur[id] ?? 0) + n);
+}
+
+/** Give a player an escrowed bundle (resources + money + items). */
 function deliver(userId, bundle, now) {
   credit(userId, bundle.resources ?? {});
+  creditItems(userId, bundle.items ?? {});
   if (bundle.money > 0) economy.addMoney(userId, bundle.money, now);
 }
 
@@ -102,41 +113,59 @@ export function setOffer(userId, lobbyId, offer, now = Date.now()) {
   if (!isParticipant(lobby, userId)) return { error: 'Kein Teilnehmer dieser Lobby.' };
   if (lobby.status !== 'open' && lobby.status !== 'active') return { error: 'Diese Lobby ist nicht mehr aktiv.' };
 
-  // Accept either { resources:{…}, money:N } or a legacy flat resource map.
+  // Accept { resources:{…}, money:N, items:{…} } or a legacy flat resource map.
   const inc = offer ?? {};
-  const hasShape = inc && typeof inc === 'object' && ('resources' in inc || 'money' in inc);
+  const hasShape = inc && typeof inc === 'object' && ('resources' in inc || 'money' in inc || 'items' in inc);
   const reqRes = hasShape ? (inc.resources ?? {}) : inc;
   const reqMoney = hasShape ? Number(inc.money ?? 0) : 0;
+  const reqItems = hasShape ? (inc.items ?? {}) : {};
   if (!Number.isFinite(reqMoney) || reqMoney < 0) return { error: 'Ungültiger Geldbetrag.' };
 
-  const clean = {};
+  const cleanRes = {};
   for (const [t, a] of Object.entries(reqRes)) {
     if (!RES_SET.has(t)) return { error: `Unbekannter Rohstoff: ${t}.` };
     const n = Number(a);
     if (!Number.isFinite(n) || n < 0) return { error: 'Ungültige Menge.' };
-    if (n > 0) clean[t] = n;
+    if (n > 0) cleanRes[t] = n;
+  }
+  const cleanItems = {};
+  for (const [id, a] of Object.entries(reqItems)) {
+    if (!ITEM_IDS.has(id)) return { error: `Unbekanntes Item: ${id}.` };
+    const n = Math.floor(Number(a));
+    if (!Number.isFinite(n) || n < 0) return { error: 'Ungültige Item-Menge.' };
+    if (n > 0) cleanItems[id] = n;
   }
 
   const mine = queries.getOffers(lobbyId).find((o) => o.user_id === userId);
   const escrow = parseEscrow(mine?.escrow);
   const have = bag(userId);
-  const types = new Set([...Object.keys(escrow.resources), ...Object.keys(clean)]);
+  const haveItems = itemBag(userId);
+  const types = new Set([...Object.keys(escrow.resources), ...Object.keys(cleanRes)]);
+  const itemIds = new Set([...Object.keys(escrow.items), ...Object.keys(cleanItems)]);
 
-  // 1) Validate resource affordability (pure check) before any side effects.
+  // 1) Validate affordability (pure checks) before any side effects.
   for (const t of types) {
-    const delta = (clean[t] ?? 0) - (escrow.resources[t] ?? 0);
+    const delta = (cleanRes[t] ?? 0) - (escrow.resources[t] ?? 0);
     if (delta > 0 && (have[t] ?? 0) + 1e-9 < delta) return { error: `Nicht genug ${t}.` };
+  }
+  for (const id of itemIds) {
+    const delta = (cleanItems[id] ?? 0) - (escrow.items[id] ?? 0);
+    if (delta > 0 && (haveItems[id] ?? 0) < delta) return { error: 'Nicht genug Items für dieses Angebot.' };
   }
   // 2) Money escrow delta via the authoritative economy (may fail → bail early).
   const moneyDelta = reqMoney - escrow.money;
   if (moneyDelta > 0) { if (!economy.spendMoney(userId, moneyDelta, now)) return { error: 'Nicht genug Geld.' }; }
   else if (moneyDelta < 0) economy.addMoney(userId, -moneyDelta, now);
-  // 3) Apply resource deltas (deduct increases, refund decreases).
+  // 3) Apply resource + item deltas (deduct increases, refund decreases).
   for (const t of types) {
-    const delta = (clean[t] ?? 0) - (escrow.resources[t] ?? 0);
+    const delta = (cleanRes[t] ?? 0) - (escrow.resources[t] ?? 0);
     if (delta !== 0) queries.setResource(userId, t, (have[t] ?? 0) - delta);
   }
-  queries.upsertOffer(lobbyId, userId, JSON.stringify({ resources: clean, money: reqMoney }), 0);
+  for (const id of itemIds) {
+    const delta = (cleanItems[id] ?? 0) - (escrow.items[id] ?? 0);
+    if (delta !== 0) queries.setItem(userId, id, (haveItems[id] ?? 0) - delta);
+  }
+  queries.upsertOffer(lobbyId, userId, JSON.stringify({ resources: cleanRes, money: reqMoney, items: cleanItems }), 0);
   queries.resetLobbyConfirms(lobbyId); // any offer change invalidates both confirmations
   queries.touchLobby(lobbyId);
   return { ok: true };
@@ -178,11 +207,11 @@ export function getLobbyState(userId, lobbyId, now = Date.now()) {
   );
   const partnerId = lobby.creator_id === userId ? lobby.joiner_id : lobby.creator_id;
   const nameOf = (id) => (id === lobby.creator_id ? lobby.creator_name : lobby.joiner_name);
-  const empty = { resources: {}, money: 0 };
+  const empty = { resources: {}, money: 0, items: {} };
   return {
     id: lobby.id, status: lobby.status, title: lobby.title, isCreator: lobby.creator_id === userId,
     you: {
-      name: nameOf(userId), resources: bag(userId), money: economy.peekMoney(userId),
+      name: nameOf(userId), resources: bag(userId), money: economy.peekMoney(userId), items: itemBag(userId),
       offer: offers[userId]?.offer ?? empty, confirmed: offers[userId]?.confirmed ?? false,
     },
     partner: partnerId ? {

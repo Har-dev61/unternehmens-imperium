@@ -65,6 +65,14 @@ db.exec(`
     PRIMARY KEY (user_id, building_id)
   );
 
+  /* Lootbox: owned cosmetic prestige items (count stacks; tradable). */
+  CREATE TABLE IF NOT EXISTS player_items (
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    item_id TEXT NOT NULL,
+    count   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, item_id)
+  );
+
   CREATE TABLE IF NOT EXISTS resource_state (
     user_id   INTEGER PRIMARY KEY REFERENCES users(id),
     last_tick INTEGER NOT NULL
@@ -201,6 +209,11 @@ const stmts = {
     `INSERT INTO player_buildings (user_id, building_id, count) VALUES (?, ?, ?)
      ON CONFLICT(user_id, building_id) DO UPDATE SET count = excluded.count`
   ),
+  itemAll: db.prepare('SELECT item_id, count FROM player_items WHERE user_id = ?'),
+  itemUpsert: db.prepare(
+    `INSERT INTO player_items (user_id, item_id, count) VALUES (?, ?, ?)
+     ON CONFLICT(user_id, item_id) DO UPDATE SET count = excluded.count`
+  ),
   energyGet: db.prepare('SELECT energy, last_tick FROM player_energy WHERE user_id = ? AND world = ?'),
   energySet: db.prepare(
     `INSERT INTO player_energy (user_id, world, energy, last_tick) VALUES (?, ?, ?, ?)
@@ -285,6 +298,8 @@ export const queries = {
   setResource: (userId, type, amount) => stmts.resUpsert.run(userId, type, amount),
   getBuildings: (userId) => stmts.bldAll.all(userId),            // [{ building_id, count }]
   setBuilding: (userId, buildingId, count) => stmts.bldUpsert.run(userId, buildingId, count),
+  getItems: (userId) => stmts.itemAll.all(userId),               // [{ item_id, count }]
+  setItem: (userId, itemId, count) => stmts.itemUpsert.run(userId, itemId, count),
   getEnergy: (userId, world) => stmts.energyGet.get(userId, world),
   setEnergy: (userId, world, energy, lastTick) => stmts.energySet.run(userId, world, energy, lastTick),
   getMeta: (key) => stmts.metaGet.get(key)?.value ?? null,

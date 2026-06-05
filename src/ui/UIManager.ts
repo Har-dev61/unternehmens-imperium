@@ -87,6 +87,12 @@ export class UIManager {
   private gateOnAuthed: (() => void) | null = null;
   private gateUnsub: (() => void) | null = null;
 
+  // Lootboxes: cached static catalogue + last inventory snapshot + UI state.
+  private lootboxConfig: any = null;
+  private lootboxItems: Record<string, number> = {};
+  private lootboxWorld = '';     // selected world for the Welten-Box
+  private lootboxBusy = false;   // true while a box is opening / the reel spins
+
   // Client-local UI preferences. Under server authority the game state comes
   // from the server, but these cosmetic choices stay on the device (otherwise a
   // reconcile would reset them every few seconds).
@@ -259,6 +265,7 @@ export class UIManager {
       this.buildOnline();
       if (this.activeTab === 'resources') void this.buildResources();
       if (this.activeTab === 'trade') { this.tradeLobbyId = null; void this.buildTrade(); }
+      if (this.activeTab === 'lootbox') void this.buildLootbox();
     });
     this.bus.on('online:expired', () => this.notify.show({
       title: 'Sitzung abgelaufen', text: 'Bitte melde dich erneut an.', icon: '🔑', kind: 'info', duration: 6000,
@@ -1333,11 +1340,13 @@ export class UIManager {
 
   // === Trading (Phase 3) ==================================================
   private resIcon(t: string): string { return this.resIconMap[t] ?? '📦'; }
-  /** Render an escrow bundle { resources, money } (tolerates a legacy flat map). */
+  /** Render an escrow bundle { resources, money, items } (tolerates a legacy flat map). */
   private fmtOffer(o: any): string {
     const res = o && typeof o === 'object' && 'resources' in o ? (o.resources ?? {}) : (o ?? {});
     const parts = Object.entries(res).filter(([, a]) => (a as number) > 0)
       .map(([t, a]) => `${this.resIcon(t)} ${formatNumber(a as number)}`);
+    const items = o && typeof o === 'object' && 'items' in o ? (o.items ?? {}) : {};
+    for (const [id, n] of Object.entries(items)) if ((n as number) > 0) parts.push(`${this.itemIcon(id)} ${formatNumber(n as number)}`);
     const money = o && typeof o === 'object' && 'money' in o ? Number(o.money) : 0;
     if (money > 0) parts.push(`💶 ${formatMoney(money)}`);
     return parts.length ? parts.join(' · ') : '—';
@@ -1363,6 +1372,7 @@ export class UIManager {
         this.resourceConfig = await om.fetchResourceConfig();
         for (const w of this.resourceConfig!.worlds) for (const r of w.resources) { this.resIconMap[r.type] = r.icon; this.resNameMap[r.type] = r.name; }
       }
+      if (!this.lootboxConfig) { try { this.lootboxConfig = await om.fetchLootboxConfig(); } catch { /* item chips fall back to 🎁 */ } }
       if (this.tradeLobbyId) {
         this.tradeState = await om.getLobby(this.tradeLobbyId);
         if (this.tradeState?.error) { this.tradeLobbyId = null; this.tradeState = null; }
@@ -1427,6 +1437,18 @@ export class UIManager {
           <input type="number" min="0" step="1" max="${max}" data-offer="${escapeAttr(t)}" value="${Math.floor(offRes[t] ?? 0)}">
         </div>`;
       }).join('');
+    // Cosmetic items can be offered too (escrowed like resources).
+    const offItems: Record<string, number> = myOffer.items ?? {};
+    const itemRows = Object.entries(you.items ?? {})
+      .filter(([id, a]) => (a as number) > 0 || (offItems[id] ?? 0) > 0)
+      .map(([id, a]) => {
+        const max = Math.floor((a as number) + (offItems[id] ?? 0));
+        return `<div class="offer-edit-row">
+          <span class="res-ico">${this.itemIcon(id)}</span>
+          <span class="oe-name">${escapeHtml(this.itemName(id))}</span>
+          <input type="number" min="0" step="1" max="${max}" data-offer-item="${escapeAttr(id)}" value="${Math.floor(offItems[id] ?? 0)}">
+        </div>`;
+      }).join('');
     // Money is escrowed too: the cap is liquid capital + what's already offered.
     const maxMoney = Math.floor((you.money ?? 0) + (myOffer.money ?? 0));
     const moneyRow = `<div class="offer-edit-row">
@@ -1434,7 +1456,7 @@ export class UIManager {
         <span class="oe-name">Geld</span>
         <input type="number" min="0" step="1" max="${maxMoney}" data-offer-money value="${Math.floor(myOffer.money ?? 0)}">
       </div>`;
-    const offerBody = (resourceRows || '<p class="empty">Keine Rohstoffe zum Anbieten.</p>') + moneyRow;
+    const offerBody = ((resourceRows + itemRows) || '<p class="empty">Nichts zum Anbieten.</p>') + moneyRow;
     const pill = (c: boolean) => c ? ' <span class="verify-pill ok">bestätigt</span>' : '';
     container.innerHTML = `
       <div class="trade-room">
@@ -1480,10 +1502,14 @@ export class UIManager {
     this.$('trade-content').querySelectorAll<HTMLInputElement>('[data-offer]').forEach((i) => {
       const v = Math.floor(Number(i.value)); if (v > 0) resources[i.dataset.offer!] = v;
     });
+    const items: Record<string, number> = {};
+    this.$('trade-content').querySelectorAll<HTMLInputElement>('[data-offer-item]').forEach((i) => {
+      const v = Math.floor(Number(i.value)); if (v > 0) items[i.dataset.offerItem!] = v;
+    });
     const moneyEl = this.$('trade-content').querySelector<HTMLInputElement>('[data-offer-money]');
     const money = moneyEl ? Math.max(0, Math.floor(Number(moneyEl.value)) || 0) : 0;
     try {
-      this.tradeState = await this.game.onlineManager.setLobbyOffer(this.tradeLobbyId, { resources, money });
+      this.tradeState = await this.game.onlineManager.setLobbyOffer(this.tradeLobbyId, { resources, money, items });
       this.renderLobbyRoom();
       this.playSound(540, 0.05);
       void this.reconcileEconomy(); // money moved into/out of escrow → refresh the mirror
@@ -1527,6 +1553,191 @@ export class UIManager {
       this.tradeState = st;
       if (changed) this.renderLobbyRoom();
     } catch { /* transient network blip */ }
+  }
+
+  // === Lootboxes (cosmetic prestige items, server-authoritative) ==========
+  private itemIcon(id: string): string { return this.lootboxConfig?.items.find((it: any) => it.id === id)?.icon ?? '🎁'; }
+  private itemName(id: string): string { return this.lootboxConfig?.items.find((it: any) => it.id === id)?.name ?? id; }
+  private rarityMeta(id: string): { name: string; color: string } {
+    const r = this.lootboxConfig?.rarities.find((x: any) => x.id === id);
+    return { name: r?.name ?? id, color: r?.color ?? '#9ca3af' };
+  }
+
+  /** Build/refresh the Lootbox tab (locked unless connected to the server). */
+  async buildLootbox(): Promise<void> {
+    const container = this.$('lootbox-content');
+    const om = this.game.onlineManager;
+    if (!om.usingServer) {
+      container.innerHTML = `
+        <div class="res-locked">
+          <p>🔒 Lootboxen kaufst du mit deinem Firmen-Guthaben — Inhalt &amp; Inventar sind server-autoritativ.</p>
+          <p class="hint">Melde dich mit einem Konto (oder als Gast) an, um zu öffnen.</p>
+          <button data-act="lb-auth">🔐 Anmelden / Registrieren</button>
+        </div>`;
+      container.querySelector('[data-act="lb-auth"]')?.addEventListener('click', () => this.openAuthModal());
+      return;
+    }
+    try {
+      if (!this.lootboxConfig) {
+        this.lootboxConfig = await om.fetchLootboxConfig();
+        this.lootboxWorld = this.lootboxConfig.worlds[0]?.world ?? '';
+      }
+      this.lootboxItems = (await om.fetchLootboxInventory()).items ?? {};
+      this.renderLootbox();
+    } catch (e) {
+      container.innerHTML = `<p class="empty">Lootboxen konnten nicht geladen werden: ${escapeHtml((e as Error).message)}</p>`;
+    }
+  }
+
+  private renderLootbox(): void {
+    const cfg = this.lootboxConfig;
+    if (!cfg) return;
+    const container = this.$('lootbox-content');
+    const order: string[] = cfg.rarities.map((r: any) => r.id);
+    const oddsBar = (odds: Record<string, number>): string => order.filter((id) => (odds[id] ?? 0) > 0).map((id) => {
+      const m = this.rarityMeta(id);
+      return `<span class="odds-seg" style="width:${odds[id]}%;background:${m.color}" title="${escapeHtml(m.name)}: ${odds[id].toFixed(1)} %"></span>`;
+    }).join('');
+    const worldOptions = cfg.worlds.map((w: any) =>
+      `<option value="${escapeAttr(w.world)}"${w.world === this.lootboxWorld ? ' selected' : ''}>${escapeHtml(w.name)}</option>`).join('');
+
+    const boxCards = cfg.boxes.map((b: any) => `
+      <div class="lb-box">
+        <div class="lb-box-head"><span class="lb-box-ico">${b.icon}</span><span class="lb-box-name">${escapeHtml(b.name)}</span></div>
+        <p class="lb-box-desc">${escapeHtml(b.desc ?? '')}</p>
+        ${b.scope === 'world' ? `<select class="lb-world-select" data-lb-world>${worldOptions}</select>` : ''}
+        <div class="odds-bar" title="Drop-Chancen">${oddsBar(b.odds)}</div>
+        <button class="btn-prestige lb-open" data-open="${escapeAttr(b.id)}">Öffnen · ${formatMoney(b.price)}</button>
+      </div>`).join('');
+
+    container.innerHTML = `
+      <div class="lb-boxes">${boxCards}</div>
+      <div class="lb-inv-head"><h3>🎒 Sammlung</h3><span class="lb-progress" id="lb-progress"></span></div>
+      <div id="lb-inventory"></div>`;
+    container.querySelector('[data-lb-world]')?.addEventListener('change', (e) => { this.lootboxWorld = (e.target as HTMLSelectElement).value; });
+    container.querySelectorAll<HTMLElement>('[data-open]').forEach((btn) => btn.addEventListener('click', () => void this.handleOpenBox(btn.dataset.open!)));
+    this.renderLootboxInventory();
+    this.setLootboxBusy(this.lootboxBusy);
+  }
+
+  /** The owned-items collection (all items shown; unowned ones locked). */
+  private renderLootboxInventory(): void {
+    const cfg = this.lootboxConfig;
+    const host = document.getElementById('lb-inventory');
+    if (!cfg || !host) return;
+    const inv = this.lootboxItems;
+    const owned = cfg.items.filter((it: any) => (inv[it.id] ?? 0) > 0).length;
+    const prog = document.getElementById('lb-progress');
+    if (prog) prog.textContent = `${owned}/${cfg.items.length} gesammelt`;
+
+    const byWorld = new Map<string, any[]>();
+    for (const it of cfg.items) { if (!byWorld.has(it.world)) byWorld.set(it.world, []); byWorld.get(it.world)!.push(it); }
+    host.innerHTML = [...byWorld.entries()].map(([world, items]) => {
+      const wname = cfg.worlds.find((w: any) => w.world === world)?.name ?? world;
+      const chips = items.map((it: any) => {
+        const n = inv[it.id] ?? 0;
+        if (n > 0) return `<div class="lb-item owned" style="border-color:${it.color}" title="${escapeHtml(this.rarityMeta(it.rarity).name)}">
+          <span class="lb-item-ico">${it.icon}</span>
+          <span class="lb-item-name" style="color:${it.color}">${escapeHtml(it.name)}</span>
+          <b class="lb-item-n">×${formatNumber(n)}</b></div>`;
+        return `<div class="lb-item locked" title="${escapeHtml(this.rarityMeta(it.rarity).name)} — noch nicht gefunden">
+          <span class="lb-item-ico">🔒</span><span class="lb-item-name">???</span></div>`;
+      }).join('');
+      return `<div class="lb-inv-world"><h4>${escapeHtml(wname)}</h4><div class="lb-item-grid">${chips}</div></div>`;
+    }).join('');
+  }
+
+  private setLootboxBusy(busy: boolean): void {
+    this.$('lootbox-content').querySelectorAll<HTMLButtonElement>('[data-open]').forEach((b) => { b.disabled = busy; });
+  }
+
+  private async handleOpenBox(boxType: string): Promise<void> {
+    if (this.lootboxBusy) return;
+    const cfg = this.lootboxConfig;
+    const box = cfg?.boxes.find((b: any) => b.id === boxType);
+    if (!box) return;
+    let world = '';
+    if (box.scope === 'world') {
+      world = this.lootboxWorld || cfg.worlds[0]?.world || '';
+      if (!world) { this.notify.show({ title: 'Bitte eine Welt wählen', icon: '🌍', kind: 'info' }); return; }
+    }
+    this.lootboxBusy = true; this.setLootboxBusy(true);
+    try {
+      const resp = await this.game.onlineManager.openLootbox(boxType, world);
+      if (resp.items) this.lootboxItems = resp.items;
+      void this.reconcileEconomy(); // the price was spent server-side
+      await this.playLootboxAnimation(resp.item);
+      this.renderLootboxInventory();
+    } catch (e) {
+      this.notify.show({ title: 'Öffnen fehlgeschlagen', text: (e as Error).message, icon: '⚠️', kind: 'error' });
+    } finally {
+      this.lootboxBusy = false; this.setLootboxBusy(false);
+    }
+  }
+
+  /**
+   * CS:GO-style horizontal reel that decelerates onto the item the SERVER
+   * already chose. Purely visual: the winning tile is fixed before the spin,
+   * the reel is skippable, and nothing here can change the result.
+   */
+  private playLootboxAnimation(item: any): Promise<void> {
+    return new Promise((resolve) => {
+      const pool: any[] = this.lootboxConfig?.items ?? [];
+      const COUNT = 48, WIN = 42;
+      const pick = (): any => (pool.length ? pool[Math.floor(Math.random() * pool.length)] : item);
+      const tiles = Array.from({ length: COUNT }, (_, i) => (i === WIN ? item : pick()));
+      const tileHtml = (it: any): string =>
+        `<div class="reel-tile" style="--rc:${it.color}"><span class="reel-ico">${it.icon}</span><span class="reel-name">${escapeHtml(it.name)}</span></div>`;
+
+      let overlay = document.getElementById('lootbox-overlay');
+      if (!overlay) { overlay = document.createElement('div'); overlay.id = 'lootbox-overlay'; document.body.appendChild(overlay); }
+      overlay.hidden = false;
+      overlay.innerHTML = `
+        <div class="lb-spinner">
+          <div class="reel-viewport"><div class="reel-marker"></div><div class="reel-track">${tiles.map(tileHtml).join('')}</div></div>
+          <div class="lb-result" hidden></div>
+          <div class="lb-actions"><button class="btn-ghost small" data-act="skip">Überspringen</button></div>
+        </div>`;
+      const track = overlay.querySelector('.reel-track') as HTMLElement;
+      const viewport = overlay.querySelector('.reel-viewport') as HTMLElement;
+      const meta = this.rarityMeta(item.rarity);
+
+      // Centre the winning tile under the marker, using real layout (robust to CSS).
+      const finalX = (): number => {
+        const win = track.children[WIN] as HTMLElement;
+        const jitter = (Math.random() * 0.5 - 0.25) * win.offsetWidth;
+        return -(win.offsetLeft + win.offsetWidth / 2 - viewport.clientWidth / 2 + jitter);
+      };
+      let revealed = false;
+      const reveal = (): void => {
+        if (revealed || overlay!.hidden) return;
+        revealed = true;
+        const res = overlay!.querySelector('.lb-result') as HTMLElement;
+        res.hidden = false;
+        res.innerHTML = `<div class="lb-win" style="--rc:${item.color}">
+          <span class="lb-win-ico">${item.icon}</span>
+          <div class="lb-win-name" style="color:${item.color}">${escapeHtml(item.name)}</div>
+          <div class="lb-win-meta">${escapeHtml(meta.name)} · ${escapeHtml(item.worldName ?? '')}</div></div>`;
+        const actions = overlay!.querySelector('.lb-actions') as HTMLElement;
+        actions.innerHTML = `<button class="btn-prestige" data-act="close">Erhalten!</button>`;
+        actions.querySelector('[data-act="close"]')!.addEventListener('click', close);
+        this.playSound(item.rarity === 'common' ? 520 : item.rarity === 'mythic' ? 1320 : 900, 0.12);
+      };
+      const close = (): void => { if (overlay) overlay.hidden = true; resolve(); };
+
+      overlay.querySelector('[data-act="skip"]')!.addEventListener('click', () => {
+        track.style.transition = 'none';
+        track.style.transform = `translateX(${finalX()}px)`;
+        reveal();
+      });
+      track.style.transform = 'translateX(0)';
+      requestAnimationFrame(() => {
+        track.style.transition = 'transform 5s cubic-bezier(0.12, 0.7, 0.08, 1)';
+        track.style.transform = `translateX(${finalX()}px)`;
+      });
+      track.addEventListener('transitionend', reveal, { once: true });
+      setTimeout(reveal, 6000); // safety net if transitionend is missed (e.g. throttled tab)
+    });
   }
 
   // === Login gate (online-mandatory) ======================================
@@ -1701,6 +1912,7 @@ export class UIManager {
     if (tab === 'research') this.refreshResearch();
     if (tab === 'resources') { this.resourceSyncAccum = 0; void this.buildResources(); }
     if (tab === 'trade') { this.tradePollAccum = 0; void this.buildTrade(); }
+    if (tab === 'lootbox') void this.buildLootbox();
   }
 
   applyTheme(): void {

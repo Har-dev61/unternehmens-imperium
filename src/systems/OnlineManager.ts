@@ -235,6 +235,23 @@ export class OnlineManager {
     return this.api('/api/economy/quest', { method: 'POST', body: { id }, auth: true });
   }
 
+  // === Lootboxes (cosmetic prestige items, server-authoritative) ==========
+  /** Static catalogue: rarities, box types + odds, item registry, worlds. */
+  async fetchLootboxConfig(): Promise<any> {
+    if (!this.serverUrl) throw new Error('Kein Server konfiguriert.');
+    return this.api('/api/lootbox/config');
+  }
+  /** The player's owned cosmetic items. */
+  async fetchLootboxInventory(): Promise<any> {
+    this.requireServer();
+    return this.api('/api/lootbox/inventory', { auth: true });
+  }
+  /** Buy + open one box. Server spends the money and decides the item (CSPRNG). */
+  async openLootbox(boxType: string, world = ''): Promise<any> {
+    this.requireServer();
+    return this.api('/api/lootbox/open', { method: 'POST', body: { boxType, world }, auth: true });
+  }
+
   // === Trading lobbies (Phase 3) ==========================================
   private requireServer(): void { if (!this.usingServer) throw new Error('Dafür musst du online angemeldet sein.'); }
 
@@ -254,7 +271,7 @@ export class OnlineManager {
     this.requireServer();
     return this.api('/api/lobbies/' + encodeURIComponent(id) + '/join', { method: 'POST', body: {}, auth: true });
   }
-  async setLobbyOffer(id: string, offer: Record<string, number> | { resources: Record<string, number>; money: number }): Promise<any> {
+  async setLobbyOffer(id: string, offer: Record<string, number> | { resources: Record<string, number>; money: number; items?: Record<string, number> }): Promise<any> {
     this.requireServer();
     return this.api('/api/lobbies/' + encodeURIComponent(id) + '/offer', { method: 'POST', body: { offer }, auth: true });
   }

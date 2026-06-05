@@ -27,6 +27,7 @@ import * as resources from './resources.js';
 import * as trade from './trade.js';
 import * as realtime from './realtime.js';
 import * as economy from './economy.js';
+import * as lootbox from './lootbox.js';
 
 const PORT = process.env.PORT ?? 3000;
 // In production bind to 127.0.0.1 so the backend is only reachable through the
@@ -378,6 +379,22 @@ app.post('/api/economy/prestige', requireAuth, (req, res) => res.json(tx(() => e
 app.post('/api/economy/world', requireAuth, (req, res) => res.json(tx(() => economy.setActiveWorld(req.user.id, String(req.body?.id ?? '')))));
 app.post('/api/economy/daily', requireAuth, (req, res) => res.json(tx(() => economy.claimDaily(req.user.id))));
 app.post('/api/economy/quest', requireAuth, (req, res) => res.json(tx(() => economy.claimQuest(req.user.id, String(req.body?.id ?? '')))));
+
+// --- Lootboxes: cosmetic prestige items (server-authoritative) -------------
+// Static catalogue (rarities, box types + odds, item registry, worlds).
+app.get('/api/lootbox/config', (_req, res) => res.json(lootbox.config()));
+// The player's owned items.
+app.get('/api/lootbox/inventory', requireAuth, (req, res) => res.json(lootbox.inventory(req.user.id)));
+// Buy + open ONE box: spend money + grant a CSPRNG-chosen item, atomically.
+app.post('/api/lootbox/open', requireAuth, (req, res) => {
+  if (!lootbox.openAllowed(req.user.id)) return res.status(429).json({ error: 'Zu viele Käufe – kurz langsamer.' });
+  const r = tx(() => {
+    const out = lootbox.open(req.user.id, String(req.body?.boxType ?? ''), String(req.body?.world ?? ''));
+    return out.error ? out : { ...out, ...lootbox.inventory(req.user.id) };
+  });
+  if (r.error) return res.status(400).json(r);
+  res.json(r);
+});
 
 // --- Trading lobbies (Phase 3) ---------------------------------------------
 // NB: /history is registered before /:id so it isn't captured as an id.

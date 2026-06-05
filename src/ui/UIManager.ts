@@ -77,6 +77,10 @@ export class UIManager {
   private pendingClicks = 0;
   private clickFlushAccum = 0;
   private econReconcileAccum = 0;
+  /** When the server rate-limits us (429), pause economy syncing until this time. */
+  private econBackoffUntil = 0;
+  /** Timestamp of the last roll request, to throttle collect-button spam. */
+  private lastRollAt = 0;
 
   // Login gate (online-mandatory): callback to run once a server session exists,
   // plus the unsubscribe for the session listener that watches the auth modal.
@@ -325,12 +329,13 @@ export class UIManager {
         const interval = this.tradeLobbyId ? (this.game.onlineManager.isLive ? 8 : 2) : 8;
         if (this.tradePollAccum >= interval) { this.tradePollAccum = 0; void this.pollTrade(); }
       }
-      // Economy: flush buffered clicks (~1×/s) and reconcile with the server (~4 s).
-      if (this.game.onlineManager.usingServer) {
+      // Economy: flush buffered clicks (~1.5 s) and reconcile (~8 s). Skipped
+      // while backing off after a 429 so we don't pile onto a rate-limited server.
+      if (this.game.onlineManager.usingServer && Date.now() >= this.econBackoffUntil) {
         this.clickFlushAccum += 0.4;
         this.econReconcileAccum += 0.4;
-        if (this.pendingClicks > 0 && this.clickFlushAccum >= 1) { this.clickFlushAccum = 0; void this.flushClicks(); }
-        if (this.econReconcileAccum >= 4) { this.econReconcileAccum = 0; void this.reconcileEconomy(); }
+        if (this.pendingClicks > 0 && this.clickFlushAccum >= 1.5) { this.clickFlushAccum = 0; void this.flushClicks(); }
+        if (this.econReconcileAccum >= 8) { this.econReconcileAccum = 0; void this.reconcileEconomy(); }
       }
     }
   }
@@ -473,7 +478,7 @@ export class UIManager {
     const n = this.pendingClicks;
     this.pendingClicks = 0;
     try { const resp = await om.econClick(n); this.mirrorEconomy(resp.save); }
-    catch { /* network blip — those clicks are forfeited, balance self-corrects */ }
+    catch (e) { this.pendingClicks += n; this.econBackoff(e); } // keep clicks for a retry
   }
 
   /** Pull a fresh authoritative snapshot (or flush pending clicks first). */
@@ -482,7 +487,13 @@ export class UIManager {
     if (!om.usingServer) return;
     if (this.pendingClicks > 0) { await this.flushClicks(); return; }
     try { const resp = await om.fetchEconomy(); this.mirrorEconomy(resp.save); }
-    catch { /* keep extrapolating locally until the next sync */ }
+    catch (e) { this.econBackoff(e); } // keep extrapolating locally until the next sync
+  }
+
+  /** After a failed sync, pause economy polling — longer when rate-limited (429). */
+  private econBackoff(e: unknown): void {
+    const http = (e as { http?: number }).http;
+    this.econBackoffUntil = Date.now() + (http === 429 ? 30_000 : 5_000);
   }
 
   /** Run a server economy action, mirror the result, and surface failures. */
@@ -1277,6 +1288,11 @@ export class UIManager {
   }
 
   async handleRoll(world: string): Promise<void> {
+    // Throttle to the server's roll rate (5/s) so spam-clicking doesn't fire
+    // requests that would just be rejected — and waste the shared rate budget.
+    const now = Date.now();
+    if (now - this.lastRollAt < 200) return;
+    this.lastRollAt = now;
     try {
       const res = await this.game.onlineManager.rollResource(world);
       this.applyResourceSnapshot(res);                 // res spreads the fresh snapshot

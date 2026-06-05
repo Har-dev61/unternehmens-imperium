@@ -71,10 +71,14 @@ app.use((req, res, next) => {
 });
 
 // --- Rate-Limiting ---------------------------------------------------------
-// Allgemeines Limit gegen Spam (normales Spiel bleibt weit darunter).
+// Allgemeines Limit gegen Spam. Seit der server-autoritativen Ökonomie pollt
+// jeder aktive Client laufend (Klick-Batch ~1×/1,5 s + Reconcile ~alle 8 s) und
+// die Rohstoff-Sammlung erlaubt Bursts (ROLL_LIMIT 5/s, Burst 10). 120/min war
+// dafür zu knapp → großzügiger Deckel; die echten Anti-Abuse-Limits sitzen
+// ohnehin feiner darunter (authLimiter, Klick-Token-Bucket, ROLL_LIMIT).
 const apiLimiter = rateLimit({
   windowMs: 60_000,
-  limit: Number(process.env.API_RATE_LIMIT ?? 120), // pro IP und Minute
+  limit: Number(process.env.API_RATE_LIMIT ?? 600), // pro IP und Minute
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   message: { error: 'Zu viele Anfragen – bitte kurz warten.' },

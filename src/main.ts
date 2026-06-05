@@ -1,9 +1,15 @@
 /**
- * Entry point. Wires the systems together, restores the save (with offline
- * progress), starts the loop and schedules autosave + online polling.
+ * Entry point. Wires the systems together, then gates the game behind a server
+ * session (Part 2b: the economy is server-authoritative — online is mandatory).
  *
  * Dependency direction: main → Game (logic) → systems; UIManager observes the
  * EventBus. Nothing in the logic layer imports the UI.
+ *
+ * The local Game is only a RENDER MIRROR of the server's canonical instance: it
+ * ticks optimistically for a smooth display, but every action goes to the server
+ * and the returned save is mirrored back. Random events, golden deals and
+ * progress detection are disabled locally (the server owns them, and has them
+ * off too), so the mirror never drifts from the authoritative state.
  */
 import { EventBus } from './systems/EventBus.js';
 import { SaveSystem } from './systems/SaveSystem.js';
@@ -12,7 +18,7 @@ import { EventManager } from './systems/EventManager.js';
 import { Notifications } from './ui/Notifications.js';
 import { UIManager } from './ui/UIManager.js';
 import { Game } from './core/Game.js';
-import { formatMoney, formatTime } from './ui/format.js';
+import type { SaveState } from './types.js';
 
 function boot(): void {
   const bus = new EventBus();
@@ -30,63 +36,50 @@ function boot(): void {
   const notifications = new Notifications();
   const ui = new UIManager(game, notifications);
 
-  // Restore save (if any) and remember when it was saved for offline maths.
-  const saved = saveSystem.load();
-  let savedAt = 0;
-  if (saved) {
-    game.applySave(saved);
-    savedAt = saved.savedAt ?? 0;
-  }
+  // --- Server is authoritative: keep the local mirror from drifting ---------
+  // Same pattern the server uses (server/economy.js) but for the opposite role:
+  // no random events, no golden deals, and no client-side progress detection
+  // (world unlocks / achievements / quests are read from the server save, with
+  // toasts emitted by UIManager.mirrorEconomy on transitions).
+  game.eventManager.update = () => {};
+  game.goldenDeal.update = () => {};
+  game.checkProgress = () => {};
 
   game.company.name = game.company.name || 'Mein Startup';
   ui.init();
-  (document.getElementById('company-name') as HTMLInputElement).value = game.company.name;
 
-  // Offline progress.
-  if (savedAt) {
-    const elapsed = (Date.now() - savedAt) / 1000;
-    if (elapsed > 60) {
-      const result = game.applyOfflineProgress(elapsed);
-      if (result && result.earned > 0) {
-        ui.openModal(`
-          <h2>👋 Willkommen zurück!</h2>
-          <p>Dein Unternehmen war <b>${formatTime(result.requested)}</b> ohne dich aktiv
-             ${result.capped ? `(angerechnet: ${formatTime(result.seconds)})` : ''}.</p>
-          <p class="offline-earned">+${formatMoney(result.earned)}</p>
-          <div class="modal-actions">
-            <button class="btn-prestige" data-act="ok">Super!</button>
-          </div>`);
-        (document.querySelector('#modal-layer [data-act="ok"]') as HTMLElement).onclick = () => ui.closeModal();
-        ui.refreshAll();
-      }
-    }
-  }
-
-  // Show "what's new" once if there are unseen updates (skipped while the
-  // offline-welcome modal is already on screen).
-  ui.maybeAutoShowNews();
-
-  game.start();
-
-  // Autosave every 30 s.
-  setInterval(() => { if (game.settings.autosave) game.save(); }, 30_000);
-
-  // Persist on tab hide / close so progress is never lost.
-  const flush = (): void => { if (game.settings.autosave) game.save(); };
-  window.addEventListener('beforeunload', flush);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) flush(); });
-
-  // Poll the server for global events while online (de-duped in EventManager).
-  const pollEvents = async (): Promise<void> => {
-    if (!onlineManager.isOnline) return;
+  /** Pull authoritative state, reveal the game and start the render loop. */
+  const enterGame = async (): Promise<void> => {
+    let state: { save: SaveState };
     try {
-      const events = await onlineManager.fetchEvents();
-      if (events.length) eventManager.ingestServerEvents(events);
-    } catch { /* offline / network hiccup — ignore */ }
+      state = await onlineManager.fetchEconomy();
+    } catch (e) {
+      notifications.show({ title: 'Verbindungsfehler', text: (e as Error).message, icon: '⚠️', kind: 'error', duration: 5000 });
+      // Token expired (401) → usingServer is now false → re-auth via the gate.
+      // Transient hiccup (still authed) → retry shortly; the boot self-heals.
+      if (onlineManager.usingServer) setTimeout(() => void enterGame(), 3000);
+      else ui.showLoginGate(enterGame);
+      return;
+    }
+    ui.mirrorEconomy(state.save, false); // initial load: no "unlocked!" toast flood
+    ui.hideLoginGate();
+    ui.refreshAll();
+    ui.maybeAutoShowNews();
+    if (!game.running) game.start();
   };
-  setInterval(pollEvents, 60_000);
-  // Sofort nach dem Login einmal pollen (statt bis zu 60 s zu warten).
-  bus.on('online:session', (s: { mode: string }) => { if (s.mode !== 'offline') pollEvents(); });
+
+  // Online-Pflicht: restore an existing session, otherwise show the login gate.
+  void (async () => {
+    await onlineManager.restoreSession();
+
+    // Losing the session (logout / token expiry) drops back to the gate.
+    bus.on('online:session', (s: { mode: string }) => {
+      if (s.mode === 'offline') { game.stop(); ui.showLoginGate(enterGame); }
+    });
+
+    if (onlineManager.usingServer) await enterGame();
+    else ui.showLoginGate(enterGame);
+  })();
 
   // PWA: Service Worker registrieren (greift nur in sicherem Kontext: https oder localhost).
   if ('serviceWorker' in navigator) {

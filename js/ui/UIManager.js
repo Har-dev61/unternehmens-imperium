@@ -37,6 +37,22 @@ export class UIManager {
     tradeState = null;
     tradeSearch = '';
     tradePollAccum = 0;
+    // Economy (Part 2b): the server is authoritative. Clicks are buffered and
+    // flushed as a batch (~1×/s); the whole economy is reconciled (~every 4 s)
+    // against the server's save. Between syncs the local Game ticks optimistically
+    // for a smooth display only.
+    pendingClicks = 0;
+    clickFlushAccum = 0;
+    econReconcileAccum = 0;
+    // Login gate (online-mandatory): callback to run once a server session exists,
+    // plus the unsubscribe for the session listener that watches the auth modal.
+    gateOnAuthed = null;
+    gateUnsub = null;
+    // Client-local UI preferences. Under server authority the game state comes
+    // from the server, but these cosmetic choices stay on the device (otherwise a
+    // reconcile would reset them every few seconds).
+    prefsKey = 'imperium-prefs';
+    prefs = { muted: false, buyQuantity: '1' };
     clickButton;
     shopList;
     floatLayer;
@@ -48,12 +64,48 @@ export class UIManager {
     $(id) {
         return document.getElementById(id);
     }
+    // === Client-local prefs =================================================
+    loadPrefs() {
+        try {
+            const raw = localStorage.getItem(this.prefsKey);
+            if (raw)
+                this.prefs = { ...this.prefs, ...JSON.parse(raw) };
+        }
+        catch { /* private mode / corrupt — keep defaults */ }
+    }
+    savePrefs() {
+        try {
+            localStorage.setItem(this.prefsKey, JSON.stringify(this.prefs));
+        }
+        catch { /* ignore */ }
+    }
+    /** Re-apply device-local prefs over the (server-mirrored) state. */
+    applyPrefs() {
+        this.game.settings.muted = this.prefs.muted;
+        this.game.settings.buyQuantity = this.prefs.buyQuantity;
+        if (this.prefs.companyName)
+            this.game.company.name = this.prefs.companyName;
+    }
+    syncBuyQtyButtons() {
+        document.querySelectorAll('#buy-qty [data-qty]').forEach((b) => b.classList.toggle('active', b.dataset.qty === this.game.settings.buyQuantity));
+    }
+    /** Set the (device-local) company name and mirror it into the topbar input. */
+    setCompanyName(raw) {
+        const name = raw.trim() || 'Mein Unternehmen';
+        this.game.company.name = name;
+        this.prefs.companyName = name;
+        this.savePrefs();
+        this.$('company-name').value = name;
+    }
     // === Bootstrap ==========================================================
     init() {
         this.clickButton = this.$('click-button');
         this.shopList = this.$('shop-list');
         this.floatLayer = this.$('float-layer');
+        this.loadPrefs();
+        this.applyPrefs();
         this.bindStatic();
+        this.syncBuyQtyButtons();
         this.preventMobileZoom();
         this.buildShop();
         this.rebuildUpgrades();
@@ -88,18 +140,21 @@ export class UIManager {
         });
         document.querySelectorAll('#buy-qty [data-qty]').forEach((btn) => {
             btn.addEventListener('click', () => {
-                this.game.settings.buyQuantity = btn.dataset.qty;
+                this.prefs.buyQuantity = btn.dataset.qty;
+                this.savePrefs();
+                this.game.settings.buyQuantity = this.prefs.buyQuantity;
                 document.querySelectorAll('#buy-qty [data-qty]').forEach((b) => b.classList.toggle('active', b === btn));
                 this.refreshShopRows();
             });
         });
         this.$('company-name').addEventListener('change', (e) => {
-            this.game.company.name = e.target.value.trim() || 'Mein Unternehmen';
+            this.setCompanyName(e.target.value);
         });
         this.$('btn-settings').addEventListener('click', () => this.openSettings());
+        // Server is authoritative now → the save button forces an immediate sync.
         this.$('btn-save').addEventListener('click', () => {
-            this.game.save();
-            this.notify.show({ title: 'Gespeichert', icon: '💾', kind: 'success', duration: 2000 });
+            void this.reconcileEconomy();
+            this.notify.show({ title: 'Mit Server synchronisiert', icon: '🔄', kind: 'success', duration: 2000 });
         });
         this.$('btn-mute').addEventListener('click', () => this.toggleMute());
         this.$('btn-news').addEventListener('click', () => this.openNews());
@@ -249,6 +304,19 @@ export class UIManager {
                     void this.pollTrade();
                 }
             }
+            // Economy: flush buffered clicks (~1×/s) and reconcile with the server (~4 s).
+            if (this.game.onlineManager.usingServer) {
+                this.clickFlushAccum += 0.4;
+                this.econReconcileAccum += 0.4;
+                if (this.pendingClicks > 0 && this.clickFlushAccum >= 1) {
+                    this.clickFlushAccum = 0;
+                    void this.flushClicks();
+                }
+                if (this.econReconcileAccum >= 4) {
+                    this.econReconcileAccum = 0;
+                    void this.reconcileEconomy();
+                }
+            }
         }
     }
     updateStats() {
@@ -290,9 +358,10 @@ export class UIManager {
         }
     }
     handleDaily() {
-        const r = this.game.claimDaily();
-        if (r)
+        void this.econAction(() => this.game.onlineManager.econDaily(), (resp) => { if (resp.reward) {
             this.playSound(880);
+            this.bus.emit('daily:claimed', resp.reward);
+        } });
     }
     refreshMilestone() {
         const next = this.game.worlds.find((w) => !w.unlocked && w.unlockAt);
@@ -325,7 +394,11 @@ export class UIManager {
     }
     // === Clicking ===========================================================
     handleClick(clientX, clientY) {
+        // Optimistic: credit the local mirror instantly for snappy feedback, and
+        // buffer the click to send to the server as a batch (which is the source of
+        // truth — it re-credits at the server click value, rate-limited).
         const value = this.game.click();
+        this.pendingClicks++;
         this.clickButton.classList.remove('pop');
         void this.clickButton.offsetWidth; // restart animation
         this.clickButton.classList.add('pop');
@@ -347,6 +420,75 @@ export class UIManager {
         span.style.top = y + 'px';
         this.floatLayer.appendChild(span);
         setTimeout(() => span.remove(), 1100);
+    }
+    // === Economy sync (server-authoritative) ================================
+    /**
+     * Mirror an authoritative server save into the local Game. Device-local prefs
+     * (name, mute, buy quantity) are preserved, and not-yet-flushed optimistic
+     * clicks are re-applied so the balance never visibly dips under spam.
+     * With `emitTransitions`, newly-unlocked worlds / achievements / completed
+     * quests fire their usual events (toasts + targeted rebuilds). The initial
+     * load passes `false` to avoid a flood of "unlocked!" toasts on every login.
+     */
+    mirrorEconomy(save, emitTransitions = true) {
+        const g = this.game;
+        const preWorlds = emitTransitions ? new Set(g.worlds.filter((w) => w.unlocked).map((w) => w.id)) : null;
+        const preAch = emitTransitions ? new Set(g.achievements.filter((a) => a.unlocked).map((a) => a.id)) : null;
+        const preQuest = emitTransitions ? new Set(g.quests.filter((q) => q.completed).map((q) => q.id)) : null;
+        g.applySave(save);
+        this.applyPrefs();
+        if (this.pendingClicks > 0)
+            g.company.money.add(this.pendingClicks * g.getClickValue());
+        if (emitTransitions) {
+            for (const w of g.worlds)
+                if (w.unlocked && !preWorlds.has(w.id))
+                    this.bus.emit('world:unlocked', { world: w });
+            for (const a of g.achievements)
+                if (a.unlocked && !preAch.has(a.id))
+                    this.bus.emit('achievement:unlocked', { achievement: a });
+            for (const q of g.quests)
+                if (q.completed && !preQuest.has(q.id))
+                    this.bus.emit('quest:complete', { quest: q });
+        }
+    }
+    /** Send buffered clicks to the server and reconcile the returned save. */
+    async flushClicks() {
+        const om = this.game.onlineManager;
+        if (!om.usingServer || this.pendingClicks <= 0)
+            return;
+        const n = this.pendingClicks;
+        this.pendingClicks = 0;
+        try {
+            const resp = await om.econClick(n);
+            this.mirrorEconomy(resp.save);
+        }
+        catch { /* network blip — those clicks are forfeited, balance self-corrects */ }
+    }
+    /** Pull a fresh authoritative snapshot (or flush pending clicks first). */
+    async reconcileEconomy() {
+        const om = this.game.onlineManager;
+        if (!om.usingServer)
+            return;
+        if (this.pendingClicks > 0) {
+            await this.flushClicks();
+            return;
+        }
+        try {
+            const resp = await om.fetchEconomy();
+            this.mirrorEconomy(resp.save);
+        }
+        catch { /* keep extrapolating locally until the next sync */ }
+    }
+    /** Run a server economy action, mirror the result, and surface failures. */
+    async econAction(call, onOk) {
+        try {
+            const resp = await call();
+            this.mirrorEconomy(resp.save);
+            onOk?.(resp);
+        }
+        catch (e) {
+            this.notify.show({ title: 'Aktion fehlgeschlagen', text: e.message, icon: '⚠️', kind: 'error' });
+        }
     }
     // === Shop (assets of active world) ======================================
     buildShop() {
@@ -386,9 +528,11 @@ export class UIManager {
     }
     handleBuyAsset(id) {
         const q = this.game.settings.buyQuantity;
-        const ok = this.game.buyAsset(id, q === 'max' ? 'max' : Number(q));
-        if (ok)
+        void this.econAction(() => this.game.onlineManager.econBuyAsset(id, q === 'max' ? 'max' : Number(q)), (resp) => { if (resp.ok) {
             this.playSound(520, 0.05);
+            this.refreshShopRows();
+            this.rebuildUpgrades();
+        } });
     }
     refreshShopRows() {
         const g = this.game;
@@ -444,7 +588,7 @@ export class UIManager {
           <span class="up-name">${u.name}</span>
           <span class="up-desc">${u.description}</span>
           <span class="up-cost">${formatMoney(u.cost)}</span>`;
-                card.addEventListener('click', () => this.game.buyUpgrade(u.id));
+                card.addEventListener('click', () => this.handleBuyUpgrade(u.id));
                 grid.appendChild(card);
                 this.upgradeRows.push({ upgrade: u, el: card });
             }
@@ -458,6 +602,13 @@ export class UIManager {
         for (const r of this.upgradeRows) {
             r.el.classList.toggle('affordable', money >= r.upgrade.cost);
         }
+    }
+    handleBuyUpgrade(id) {
+        void this.econAction(() => this.game.onlineManager.econBuyUpgrade(id), (resp) => { if (resp.ok) {
+            const u = this.game.getUpgrade(id);
+            if (u)
+                this.bus.emit('upgrade:bought', { upgrade: u });
+        } });
     }
     // === Worlds =============================================================
     buildWorlds() {
@@ -480,7 +631,7 @@ export class UIManager {
             <div class="world-stats">${w.getTotalAssetCount()} Assets · ${formatRate(w.getProduction() * this.game.company.globalMultiplier * this.game.player.prestigeMultiplier)}</div>
           </div>
           <button class="world-select">${w.id === this.game.activeWorldId ? 'Aktiv' : 'Betreten'}</button>`;
-                card.querySelector('.world-select').addEventListener('click', () => this.game.setActiveWorld(w.id));
+                card.querySelector('.world-select').addEventListener('click', () => this.handleSetWorld(w.id));
             }
             else {
                 card.innerHTML = `
@@ -515,6 +666,13 @@ export class UIManager {
             }
         }
     }
+    handleSetWorld(id) {
+        void this.econAction(() => this.game.onlineManager.econSetWorld(id), (resp) => { if (resp.ok) {
+            const w = this.game.getWorld(id);
+            if (w)
+                this.bus.emit('world:changed', { world: w });
+        } });
+    }
     // === Quests =============================================================
     buildQuests() {
         const container = this.$('quests-list');
@@ -532,7 +690,7 @@ export class UIManager {
           <div class="quest-meta"><span class="quest-prog"></span><span class="quest-reward">${q.rewardText()}</span></div>
         </div>
         <button class="quest-claim">Einlösen</button>`;
-            row.querySelector('.quest-claim').addEventListener('click', () => this.game.claimQuest(q.id));
+            row.querySelector('.quest-claim').addEventListener('click', () => this.handleClaimQuest(q.id));
             container.appendChild(row);
             this.questRows.push({
                 quest: q, row,
@@ -557,6 +715,13 @@ export class UIManager {
             r.btn.textContent = r.quest.claimed ? '✓ Eingelöst' : (r.quest.completed ? 'Einlösen' : 'Offen');
         }
     }
+    handleClaimQuest(id) {
+        void this.econAction(() => this.game.onlineManager.econClaimQuest(id), (resp) => { if (resp.ok) {
+            const q = this.game.quests.find((x) => x.id === id);
+            if (q)
+                this.bus.emit('quest:claimed', { quest: q });
+        } });
+    }
     // === Research ===========================================================
     buildResearch() {
         const container = this.$('research-tree');
@@ -574,7 +739,7 @@ export class UIManager {
         <span class="up-desc">${ru.description ?? ''}</span>
         <span class="up-cost">${owned ? '✓ Erforscht' : (available ? `🔬 ${formatNumber(ru.cost)} FP` : '🔒 Voraussetzung fehlt')}</span>`;
             if (!owned && available)
-                card.addEventListener('click', () => this.game.buyResearch(ru.id));
+                card.addEventListener('click', () => this.handleBuyResearch(ru.id));
             container.appendChild(card);
             this.researchRows.push({ def: ru, el: card });
         }
@@ -589,6 +754,10 @@ export class UIManager {
             const available = this.game.isResearchAvailable(r.def.id);
             r.el.classList.toggle('affordable', !owned && available && rp >= r.def.cost);
         }
+    }
+    handleBuyResearch(id) {
+        void this.econAction(() => this.game.onlineManager.econResearch(id), (resp) => { if (resp.ok)
+            this.bus.emit('research:bought', { id }); });
     }
     // === Golden Deals =======================================================
     spawnGolden(deal) {
@@ -655,9 +824,13 @@ export class UIManager {
         <span class="up-desc">${pu.description}</span>
         <span class="up-cost">${owned ? '✓ Im Besitz' : `💠 ${pu.cost} Einfluss`}</span>`;
             if (!owned)
-                card.addEventListener('click', () => this.game.buyPrestigeUpgrade(pu.id));
+                card.addEventListener('click', () => this.handlePrestigeUpgrade(pu.id));
             shop.appendChild(card);
         }
+    }
+    handlePrestigeUpgrade(id) {
+        void this.econAction(() => this.game.onlineManager.econPrestigeUpgrade(id), (resp) => { if (resp.ok)
+            this.bus.emit('prestige:upgrade', { id }); });
     }
     confirmPrestige() {
         const gain = this.game.player.computePrestigeGain();
@@ -673,7 +846,9 @@ export class UIManager {
         const m = this.$('modal-layer');
         m.querySelector('[data-act="cancel"]').onclick = () => this.closeModal();
         m.querySelector('[data-act="confirm"]').onclick = () => {
-            this.game.prestige();
+            const before = this.game.player.prestigePoints;
+            void this.econAction(() => this.game.onlineManager.econPrestige(), (resp) => { if (resp.ok)
+                this.bus.emit('prestige:done', { gain: this.game.player.prestigePoints - before }); });
             this.closeModal();
         };
     }
@@ -805,9 +980,7 @@ export class UIManager {
         ${s.mode === 'offline'
             ? `<button data-act="auth">🔐 Anmelden / Registrieren</button>
              <button data-act="guest" class="btn-ghost">Als Gast spielen</button>`
-            : `<button data-act="sync">☁️ In Cloud speichern</button>
-             <button data-act="load">⬇️ Aus Cloud laden</button>
-             <button data-act="logout" class="btn-ghost">Abmelden</button>`}
+            : `<button data-act="logout" class="btn-ghost">Abmelden</button>`}
         <button data-act="server" class="btn-ghost">Server …</button>
       </div>
       <h3>🏆 Bestenliste (Firmenwert)</h3>
@@ -836,8 +1009,6 @@ export class UIManager {
             }
         });
         on('logout', () => om.logout());
-        on('sync', () => this.cloudSync());
-        on('load', () => this.cloudLoad());
         on('refresh', () => this.refreshLeaderboard());
         on('server', () => {
             const url = prompt('Server-URL (leer = nur Simulation):', om.serverUrl);
@@ -1191,9 +1362,15 @@ export class UIManager {
     }
     // === Trading (Phase 3) ==================================================
     resIcon(t) { return this.resIconMap[t] ?? '📦'; }
-    fmtBundle(b) {
-        const e = Object.entries(b ?? {});
-        return e.length ? e.map(([t, a]) => `${this.resIcon(t)} ${formatNumber(a)}`).join(' · ') : '—';
+    /** Render an escrow bundle { resources, money } (tolerates a legacy flat map). */
+    fmtOffer(o) {
+        const res = o && typeof o === 'object' && 'resources' in o ? (o.resources ?? {}) : (o ?? {});
+        const parts = Object.entries(res).filter(([, a]) => a > 0)
+            .map(([t, a]) => `${this.resIcon(t)} ${formatNumber(a)}`);
+        const money = o && typeof o === 'object' && 'money' in o ? Number(o.money) : 0;
+        if (money > 0)
+            parts.push(`💶 ${formatMoney(money)}`);
+        return parts.length ? parts.join(' · ') : '—';
     }
     /** Top-level Handel tab: locked / lobby room / lobby browser. */
     async buildTrade() {
@@ -1254,7 +1431,7 @@ export class UIManager {
           <span class="lobby-meta">von ${escapeHtml(l.creator)} · <code>${escapeHtml(l.id)}</code></span></div>
         <button class="btn-prestige" data-join="${escapeAttr(l.id)}">Beitreten</button>
       </div>`).join('') : '<p class="empty">Keine offenen Lobbys. Erstelle die erste!</p>';
-        const histRows = hist.length ? hist.map((h) => `<div class="hist-row">🤝 mit <b>${escapeHtml(h.partner)}</b>: gab ${this.fmtBundle(h.youGave)} · erhielt ${this.fmtBundle(h.youGot)}</div>`).join('')
+        const histRows = hist.length ? hist.map((h) => `<div class="hist-row">🤝 mit <b>${escapeHtml(h.partner)}</b>: gab ${this.fmtOffer(h.youGave)} · erhielt ${this.fmtOffer(h.youGot)}</div>`).join('')
             : '<p class="empty">Noch keine Trades.</p>';
         container.innerHTML = `
       <div class="trade-create">
@@ -1281,17 +1458,27 @@ export class UIManager {
             return;
         const container = this.$('trade-content');
         const you = st.you, partner = st.partner;
+        const myOffer = you.offer ?? { resources: {}, money: 0 };
+        const offRes = myOffer.resources ?? {};
         const waiting = st.status !== 'active';
-        const offerRows = Object.entries(you.resources)
-            .filter(([t, a]) => a > 0 || (you.offer[t] ?? 0) > 0)
+        const resourceRows = Object.entries(you.resources)
+            .filter(([t, a]) => a > 0 || (offRes[t] ?? 0) > 0)
             .map(([t, a]) => {
-            const max = Math.floor(a + (you.offer[t] ?? 0));
+            const max = Math.floor(a + (offRes[t] ?? 0));
             return `<div class="offer-edit-row">
           <span class="res-ico">${this.resIcon(t)}</span>
           <span class="oe-name">${escapeHtml(this.resNameMap[t] ?? t)}</span>
-          <input type="number" min="0" step="1" max="${max}" data-offer="${escapeAttr(t)}" value="${Math.floor(you.offer[t] ?? 0)}">
+          <input type="number" min="0" step="1" max="${max}" data-offer="${escapeAttr(t)}" value="${Math.floor(offRes[t] ?? 0)}">
         </div>`;
-        }).join('') || '<p class="empty">Keine Rohstoffe zum Anbieten.</p>';
+        }).join('');
+        // Money is escrowed too: the cap is liquid capital + what's already offered.
+        const maxMoney = Math.floor((you.money ?? 0) + (myOffer.money ?? 0));
+        const moneyRow = `<div class="offer-edit-row">
+        <span class="res-ico">💶</span>
+        <span class="oe-name">Geld</span>
+        <input type="number" min="0" step="1" max="${maxMoney}" data-offer-money value="${Math.floor(myOffer.money ?? 0)}">
+      </div>`;
+        const offerBody = (resourceRows || '<p class="empty">Keine Rohstoffe zum Anbieten.</p>') + moneyRow;
         const pill = (c) => c ? ' <span class="verify-pill ok">bestätigt</span>' : '';
         container.innerHTML = `
       <div class="trade-room">
@@ -1303,12 +1490,13 @@ export class UIManager {
         <div class="trade-cols">
           <div class="trade-col">
             <h3>Dein Angebot${pill(you.confirmed)}</h3>
-            <div class="offer-editor">${offerRows}</div>
+            <div class="oe-balance">Verfügbares Kapital: <b>${formatMoney(you.money ?? 0)}</b></div>
+            <div class="offer-editor">${offerBody}</div>
             <button class="btn-ghost small" data-act="set-offer">Angebot speichern</button>
           </div>
           <div class="trade-col">
             <h3>${partner ? escapeHtml(partner.name) : 'Gegenseite'}${partner ? pill(partner.confirmed) : ''}</h3>
-            <div class="offer-view">${partner ? this.fmtBundle(partner.offer) : '—'}</div>
+            <div class="offer-view">${partner ? this.fmtOffer(partner.offer) : '—'}</div>
           </div>
         </div>
         <label class="trade-confirm">
@@ -1343,16 +1531,19 @@ export class UIManager {
     async handleSetOffer() {
         if (!this.tradeLobbyId)
             return;
-        const offer = {};
+        const resources = {};
         this.$('trade-content').querySelectorAll('[data-offer]').forEach((i) => {
             const v = Math.floor(Number(i.value));
             if (v > 0)
-                offer[i.dataset.offer] = v;
+                resources[i.dataset.offer] = v;
         });
+        const moneyEl = this.$('trade-content').querySelector('[data-offer-money]');
+        const money = moneyEl ? Math.max(0, Math.floor(Number(moneyEl.value)) || 0) : 0;
         try {
-            this.tradeState = await this.game.onlineManager.setLobbyOffer(this.tradeLobbyId, offer);
+            this.tradeState = await this.game.onlineManager.setLobbyOffer(this.tradeLobbyId, { resources, money });
             this.renderLobbyRoom();
             this.playSound(540, 0.05);
+            void this.reconcileEconomy(); // money moved into/out of escrow → refresh the mirror
         }
         catch (e) {
             this.notify.show({ title: 'Angebot abgelehnt', text: e.message, icon: '⚠️', kind: 'error' });
@@ -1367,6 +1558,7 @@ export class UIManager {
             if (st.status === 'completed') {
                 this.notify.show({ title: 'Tausch abgeschlossen! 🤝', icon: '✅', kind: 'success', duration: 6000 });
                 this.tradeLobbyId = null;
+                void this.reconcileEconomy();
                 await this.buildTrade();
             }
             else
@@ -1409,6 +1601,7 @@ export class UIManager {
                 this.notify.show({ title: 'Tausch abgeschlossen! 🤝', icon: '✅', kind: 'success', duration: 6000 });
                 this.tradeLobbyId = null;
                 this.tradeState = st;
+                void this.reconcileEconomy();
                 await this.buildTrade();
                 return;
             }
@@ -1416,6 +1609,7 @@ export class UIManager {
                 this.notify.show({ title: 'Lobby beendet', text: 'Escrow wurde zurückgebucht.', icon: '❌', kind: 'info' });
                 this.tradeLobbyId = null;
                 this.tradeState = st;
+                void this.reconcileEconomy();
                 await this.buildTrade();
                 return;
             }
@@ -1428,29 +1622,75 @@ export class UIManager {
         }
         catch { /* transient network blip */ }
     }
-    async cloudSync() {
-        try {
-            await this.game.onlineManager.syncSave(this.game.serialize());
-            this.notify.show({ title: 'In Cloud gespeichert', icon: '☁️', kind: 'success' });
+    // === Login gate (online-mandatory) ======================================
+    /**
+     * Full-screen gate shown until a server session exists. Offers guest play and
+     * the existing auth modal; `onAuthed` fires once a real server session is up
+     * (either the guest button or a login through the auth modal).
+     */
+    showLoginGate(onAuthed) {
+        this.gateOnAuthed = onAuthed;
+        const om = this.game.onlineManager;
+        let gate = document.getElementById('login-gate');
+        if (!gate) {
+            gate = document.createElement('div');
+            gate.id = 'login-gate';
+            document.body.appendChild(gate);
         }
-        catch (err) {
-            this.notify.show({ title: 'Cloud-Fehler', text: err.message, icon: '⚠️', kind: 'error' });
-        }
-    }
-    async cloudLoad() {
-        try {
-            const data = await this.game.onlineManager.loadCloud();
-            if (!data) {
-                this.notify.show({ title: 'Kein Cloud-Save gefunden', icon: '☁️', kind: 'info' });
-                return;
+        gate.hidden = false;
+        gate.innerHTML = `
+      <div class="gate-card">
+        <div class="gate-logo">🏢</div>
+        <h1>Unternehmens-Imperium</h1>
+        <p>Dein Imperium läuft jetzt server-seitig. Melde dich an, um zu spielen — als Gast geht es sofort los.</p>
+        <div id="gate-msg" class="auth-msg" hidden></div>
+        <div class="gate-actions">
+          <button class="btn-prestige" data-act="auth">🔐 Anmelden / Registrieren</button>
+          <button class="btn-ghost" data-act="guest">Als Gast spielen</button>
+        </div>
+        <button class="btn-ghost small" data-act="server">Server …</button>
+      </div>`;
+        const msg = (text, kind = 'error') => {
+            const e = gate.querySelector('#gate-msg');
+            e.hidden = false;
+            e.textContent = text;
+            e.className = 'auth-msg ' + kind;
+        };
+        gate.querySelector('[data-act="guest"]').onclick = async () => {
+            msg('Verbinde mit dem Server …', 'ok');
+            try {
+                await om.loginAsGuest();
             }
-            this.game.applySave(data);
-            this.refreshAll();
-            this.notify.show({ title: 'Aus Cloud geladen', icon: '⬇️', kind: 'success' });
+            catch { /* sim fallback keeps usingServer=false */ }
+            if (om.usingServer)
+                this.completeGate();
+            else
+                msg('Server nicht erreichbar. Bitte später erneut versuchen.');
+        };
+        gate.querySelector('[data-act="auth"]').onclick = () => this.openAuthModal();
+        gate.querySelector('[data-act="server"]').onclick = () => {
+            const url = prompt('Server-URL:', om.serverUrl);
+            if (url !== null)
+                om.setServerUrl(url.trim());
+        };
+        // A login through the auth modal surfaces as an online:session event.
+        this.gateUnsub?.();
+        this.gateUnsub = this.bus.on('online:session', () => { if (om.usingServer)
+            this.completeGate(); });
+    }
+    hideLoginGate() {
+        const gate = document.getElementById('login-gate');
+        if (gate)
+            gate.hidden = true;
+    }
+    completeGate() {
+        const cb = this.gateOnAuthed;
+        this.gateOnAuthed = null;
+        if (this.gateUnsub) {
+            this.gateUnsub();
+            this.gateUnsub = null;
         }
-        catch (err) {
-            this.notify.show({ title: 'Cloud-Fehler', text: err.message, icon: '⚠️', kind: 'error' });
-        }
+        cb?.();
     }
     async refreshLeaderboard() {
         const board = this.$('leaderboard');
@@ -1482,7 +1722,6 @@ export class UIManager {
         <input id="set-company" type="text" value="${escapeAttr(g.company.name)}"></label>
       <label class="field"><span>Spielername</span>
         <input id="set-player" type="text" value="${escapeAttr(g.player.name)}"></label>
-      <label class="check"><input id="set-auto" type="checkbox" ${g.settings.autosave ? 'checked' : ''}> Automatisch speichern</label>
       <label class="check"><input id="set-mute" type="checkbox" ${g.settings.muted ? 'checked' : ''}> Stumm</label>
 
       <h3>Spielstand</h3>
@@ -1497,15 +1736,15 @@ export class UIManager {
       </div>`);
         const m = this.$('modal-layer');
         m.querySelector('#set-company').addEventListener('change', (e) => {
-            g.company.name = e.target.value.trim() || 'Mein Unternehmen';
-            this.$('company-name').value = g.company.name;
+            this.setCompanyName(e.target.value);
         });
         m.querySelector('#set-player').addEventListener('change', (e) => {
             g.player.name = e.target.value.trim() || 'Gast';
         });
-        m.querySelector('#set-auto').addEventListener('change', (e) => { g.settings.autosave = e.target.checked; });
         m.querySelector('#set-mute').addEventListener('change', (e) => {
-            g.settings.muted = e.target.checked;
+            this.prefs.muted = e.target.checked;
+            this.savePrefs();
+            g.settings.muted = this.prefs.muted;
             this.updateMuteButton();
         });
         m.querySelector('[data-act="close"]').onclick = () => this.closeModal();
@@ -1528,19 +1767,23 @@ export class UIManager {
     }
     confirmReset() {
         this.openModal(`
-      <h2>🗑️ Wirklich alles löschen?</h2>
-      <p>Dein gesamter Fortschritt wird unwiderruflich zurückgesetzt.</p>
+      <h2>🗑️ Abmelden &amp; lokale Daten löschen?</h2>
+      <p>Du wirst abgemeldet und alle lokalen Daten dieses Geräts werden gelöscht.
+         Der Fortschritt eines <b>Kontos</b> bleibt mit dem Konto verknüpft; als <b>Gast</b>
+         beginnst du nach dem Neuladen frisch bei €0.</p>
       <div class="modal-actions">
         <button class="btn-ghost" data-act="cancel">Abbrechen</button>
-        <button class="btn-prestige" data-act="wipe">Alles löschen</button>
+        <button class="btn-prestige" data-act="wipe">Abmelden &amp; löschen</button>
       </div>`);
         const m = this.$('modal-layer');
         m.querySelector('[data-act="cancel"]').onclick = () => this.closeModal();
         m.querySelector('[data-act="wipe"]').onclick = () => {
-            // Disable autosave first, otherwise the reload's beforeunload handler
-            // would immediately re-save the in-memory state over the cleared slot.
-            this.game.settings.autosave = false;
             this.game.saveSystem.clear();
+            try {
+                localStorage.removeItem(this.prefsKey);
+            }
+            catch { /* ignore */ }
+            this.game.onlineManager.logout(); // drops the token → next load shows the gate
             location.reload();
         };
     }
@@ -1591,7 +1834,9 @@ export class UIManager {
         this.updateStats();
     }
     toggleMute() {
-        this.game.settings.muted = !this.game.settings.muted;
+        this.prefs.muted = !this.game.settings.muted;
+        this.savePrefs();
+        this.game.settings.muted = this.prefs.muted;
         this.updateMuteButton();
     }
     updateMuteButton() {

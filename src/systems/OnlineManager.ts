@@ -105,6 +105,31 @@ export class OnlineManager {
     return this.simSession(password ? 'account' : 'guest', identifier);
   }
 
+  /**
+   * Restore a session on boot from a stored token (no password needed).
+   * Verifies the token against the server; on success we're authoritative again.
+   * Returns the session, or null if there's no token / the server rejected it.
+   */
+  async restoreSession(): Promise<OnlineSession | null> {
+    if (!this.serverUrl || !this.token) return null;
+    try {
+      const me = await this.api('/api/auth/me', { auth: true });
+      this.session = {
+        mode: me.mode ?? 'account', username: me.username,
+        email: me.email ?? null, emailVerified: !!me.emailVerified, lastSync: 0,
+      };
+      this.usingServer = true;
+      this.serverReachable = true;
+      this.bus.emit('online:session', this.session);
+      this.connectSocket();
+      return this.session;
+    } catch {
+      // 401 → api() already cleared the token via handleExpiredToken.
+      // Network error → leave things untouched; the gate offers a retry.
+      return null;
+    }
+  }
+
   /** Confirm an e-mail with the token from the verification mail/link. */
   async verifyEmail(token: string): Promise<boolean> {
     if (!this.serverUrl) throw new Error('Kein Server konfiguriert.');
@@ -162,6 +187,54 @@ export class OnlineManager {
     return this.api('/api/resources/build', { method: 'POST', body: { buildingId }, auth: true });
   }
 
+  // === Server-authoritative economy (Part 2b) =============================
+  // The server runs the canonical Game; the client only sends actions and
+  // mirrors the returned `save`. Every call returns
+  // { money, perSecond, clickValue, valuation, influence, employees, buildings, save, …extra }.
+
+  /** Settled snapshot (passive income accrued server-side). */
+  async fetchEconomy(): Promise<any> {
+    this.requireServer();
+    return this.api('/api/economy', { auth: true });
+  }
+  /** Apply up to `count` clicks (server token-bucket × server click value). */
+  async econClick(count: number): Promise<any> {
+    this.requireServer();
+    return this.api('/api/economy/click', { method: 'POST', body: { count }, auth: true });
+  }
+  async econBuyAsset(id: string, quantity: number | 'max' = 1): Promise<any> {
+    this.requireServer();
+    return this.api('/api/economy/buy-asset', { method: 'POST', body: { assetId: id, quantity }, auth: true });
+  }
+  async econBuyUpgrade(id: string): Promise<any> {
+    this.requireServer();
+    return this.api('/api/economy/buy-upgrade', { method: 'POST', body: { id }, auth: true });
+  }
+  async econResearch(id: string): Promise<any> {
+    this.requireServer();
+    return this.api('/api/economy/research', { method: 'POST', body: { id }, auth: true });
+  }
+  async econPrestigeUpgrade(id: string): Promise<any> {
+    this.requireServer();
+    return this.api('/api/economy/prestige-upgrade', { method: 'POST', body: { id }, auth: true });
+  }
+  async econPrestige(): Promise<any> {
+    this.requireServer();
+    return this.api('/api/economy/prestige', { method: 'POST', body: {}, auth: true });
+  }
+  async econSetWorld(id: string): Promise<any> {
+    this.requireServer();
+    return this.api('/api/economy/world', { method: 'POST', body: { id }, auth: true });
+  }
+  async econDaily(): Promise<any> {
+    this.requireServer();
+    return this.api('/api/economy/daily', { method: 'POST', body: {}, auth: true });
+  }
+  async econClaimQuest(id: string): Promise<any> {
+    this.requireServer();
+    return this.api('/api/economy/quest', { method: 'POST', body: { id }, auth: true });
+  }
+
   // === Trading lobbies (Phase 3) ==========================================
   private requireServer(): void { if (!this.usingServer) throw new Error('Dafür musst du online angemeldet sein.'); }
 
@@ -181,7 +254,7 @@ export class OnlineManager {
     this.requireServer();
     return this.api('/api/lobbies/' + encodeURIComponent(id) + '/join', { method: 'POST', body: {}, auth: true });
   }
-  async setLobbyOffer(id: string, offer: Record<string, number>): Promise<any> {
+  async setLobbyOffer(id: string, offer: Record<string, number> | { resources: Record<string, number>; money: number }): Promise<any> {
     this.requireServer();
     return this.api('/api/lobbies/' + encodeURIComponent(id) + '/offer', { method: 'POST', body: { offer }, auth: true });
   }

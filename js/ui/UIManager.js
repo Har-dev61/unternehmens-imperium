@@ -2022,6 +2022,7 @@ export class UIManager {
         const gate = document.getElementById('login-gate');
         if (gate)
             gate.hidden = true;
+        this.closeModal(); // never leave a stray auth modal open once we're in the game
     }
     completeGate() {
         const cb = this.gateOnAuthed;

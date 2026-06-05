@@ -487,7 +487,8 @@ h3 { font-size: 0.95rem; margin: 0.9rem 0 0.5rem; color: var(--muted); text-tran
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 0.6rem 0.8rem; }
 
 /* ===== Modal ===== */
-#modal-layer { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+/* Above the login gate (70) and lootbox overlay (80) so dialogs are never hidden behind them. */
+#modal-layer { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center;
   background: rgba(3, 6, 14, 0.7); backdrop-filter: blur(4px); padding: 1rem; }
 #modal-layer[hidden] { display: none; }
 .modal { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow);
@@ -588,7 +589,7 @@ h3 { font-size: 0.95rem; margin: 0.9rem 0 0.5rem; color: var(--muted); text-tran
 .dev-row button { white-space: nowrap; }
 
 /* ===== Toasts ===== */
-.toast-container { position: fixed; bottom: 1rem; right: 1rem; z-index: 60; display: flex; flex-direction: column; gap: 0.5rem; max-width: 320px; }
+.toast-container { position: fixed; bottom: 1rem; right: 1rem; z-index: 110; display: flex; flex-direction: column; gap: 0.5rem; max-width: 320px; }
 .toast { display: flex; gap: 0.6rem; align-items: center; background: var(--panel); border: 1px solid var(--border);
   border-left: 4px solid var(--accent); border-radius: 12px; padding: 0.6rem 0.8rem; box-shadow: var(--shadow);
   transform: translateX(120%); opacity: 0; transition: transform 0.3s ease, opacity 0.3s ease; cursor: pointer; }

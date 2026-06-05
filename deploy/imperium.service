@@ -13,6 +13,10 @@ Environment=NODE_ENV=production
 Environment=PORT=3000
 # Nur lokal lauschen – von außen erreichbar ist die App ausschließlich über nginx.
 Environment=HOST=127.0.0.1
+# Weitere Variablen (z. B. Dev-Account, Secrets) optional aus einer Datei AUSSERHALB
+# des Repos. Das führende "-" macht sie optional (Dienst startet auch ohne die Datei).
+# Format dort: eine VAR=WERT pro Zeile (OHNE "Environment="). Siehe DEPLOY.md.
+EnvironmentFile=-/etc/imperium.env
 Restart=on-failure
 RestartSec=5
 # Etwas Härtung

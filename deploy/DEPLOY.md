@@ -134,15 +134,61 @@ und ausschließlich über nginx erreichbar.
 
 ---
 
+## Konfiguration: Env-Variablen & Dev-Account
+
+Das Backend liest alles aus **Umgebungsvariablen** — es gibt **keine `.env` im
+Code**. Im systemd-Betrieb kommen sie aus der Unit (`imperium.service`,
+`Environment=`-Zeilen) und — für Secrets — aus einer optionalen Datei
+`/etc/imperium.env`, die die Unit per `EnvironmentFile=-/etc/imperium.env` lädt
+(das `-` macht sie optional). Diese Datei gehört **nicht** ins Repo.
+
+```bash
+sudo tee /etc/imperium.env >/dev/null <<'EOF'
+# Dev-Account (Selbstbedienung Geld/Items/Reset im Online-Tab). Leer = Feature aus.
+DEV_USERNAME=dev
+DEV_PASSWORD=einLangesGeheimes
+# Optional: allgemeines Rate-Limit (Default 600 Anfragen/Min/IP)
+# API_RATE_LIMIT=600
+# Optional: Lootbox-Preise (Default 25000 / 250000 / 2500000 / 10000000)
+# LOOTBOX_PRICE_STANDARD=25000
+EOF
+sudo chmod 600 /etc/imperium.env
+sudo systemctl restart imperium      # Variablen werden erst beim (Neu-)Start gelesen
+```
+
+Mit gesetztem `DEV_USERNAME`/`DEV_PASSWORD` legt der Server den Account beim
+Start automatisch an; nach Login erscheint im **Online-Tab** das Dev-Menü
+(Geld/Item gutschreiben, Account zurücksetzen). Die Dev-Rechte erzwingt der
+**Server** (`requireDev`) — Nicht-Dev-Konten bekommen 403, unabhängig vom Client.
+
+Bekannte Variablen: `PORT`, `HOST`, `API_RATE_LIMIT` (Default 600),
+`AUTH_RATE_LIMIT` (Default 20), `DEV_USERNAME`/`DEV_PASSWORD`,
+`LOOTBOX_PRICE_{STANDARD,WORLD,PREMIUM,EVENT}`, `LOOTBOX_EVENT_ACTIVE`,
+`LOOTBOX_EVENT_UNTIL`, `ECON_OFFLINE_CAP`, `ROLL_ENERGY_*`, `MAIL_*`.
+
+---
+
 ## Updates einspielen
 
 ```bash
 cd /var/www/imperium
 sudo -u imperium git pull
-sudo -u imperium npm install && sudo -u imperium npm run build   # Client neu bauen
-cd server && sudo -u imperium npm ci --omit=dev                  # falls Deps geändert
-sudo systemctl restart imperium
+# Client-Build (überspringbar, da js/ eingecheckt ist; nötig nur wenn du selbst src/ änderst):
+# sudo -u imperium npm install && sudo -u imperium npm run build
+cd server && sudo -u imperium npm ci --omit=dev   # falls server-Deps geändert (z. B. ws)
+cd /var/www/imperium
+sudo systemctl restart imperium                   # Backend neu starten — Pull allein reicht NICHT!
+
+# Falls sich die nginx-Konfig geändert hat (z. B. neue WS-Weiterleitung) — neu kopieren:
+sudo cp deploy/nginx-imperium.conf /etc/nginx/sites-available/imperium
+sudo nginx -t && sudo systemctl reload nginx
 ```
+
+> Der Neustart legt neue Tabellen (z. B. `player_items`) automatisch an
+> (`CREATE TABLE IF NOT EXISTS`) — keine manuelle Migration nötig.
+>
+> Im **Browser** danach einmal **hart neu laden** (Strg + F5), sonst liefert der
+> Service-Worker den alten Client aus.
 
 ## Datenbank & Backup
 
@@ -157,8 +203,10 @@ sqlite3 /var/www/imperium/server/imperium.db ".backup '/var/backups/imperium-$(d
 
 Bereits im Backend umgesetzt:
 
-- ✅ **Rate-Limiting** (`express-rate-limit`): 120 Anfragen/Min./IP allgemein,
-  20 Anmeldeversuche/15 Min./IP auf `/api/auth/*` (gegen Brute-Force/Spam).
+- ✅ **Rate-Limiting** (`express-rate-limit`): 600 Anfragen/Min./IP allgemein
+  (Default, via `API_RATE_LIMIT` anpassbar — höher als früher, da die
+  server-autoritative Ökonomie laufend pollt), 20 Anmeldeversuche/15 Min./IP auf
+  `/api/auth/*` (gegen Brute-Force/Spam).
 - ✅ **Token-Ablauf**: Bearer-Tokens laufen nach 7 Tagen ab; danach fordert der
   Client automatisch eine erneute Anmeldung an.
 - ✅ **Anti-Cheat**: serverseitige Plausibilitätsprüfung der eingereichten

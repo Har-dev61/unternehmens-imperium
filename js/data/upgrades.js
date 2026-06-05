@@ -67,7 +67,7 @@ function generateWorldUpgrades() {
 }
 // --- Hand-authored upgrades ------------------------------------------------
 const CLICK_UPGRADES = [
-    { id: 'click-1', name: 'Bessere Maus', icon: '🖱️', category: 'click', cost: 250,
+    { id: 'click-1', name: 'Bessere Maus', icon: '🖱️', category: 'click', cost: 100,
         description: 'Verdoppelt den Wert pro Klick.', effects: [{ type: 'click', multiplier: 2 }], unlock: () => true },
     { id: 'click-2', name: 'Ergonomischer Stuhl', icon: '🪑', category: 'click', cost: 6_000,
         description: 'Verdoppelt den Wert pro Klick.', effects: [{ type: 'click', multiplier: 2 }], unlock: clicks(50) },

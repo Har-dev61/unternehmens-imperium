@@ -1,17 +1,21 @@
+// Cost stays put; production is tuned so the EARLY tiers pay back fast (snappy
+// start) and the LATER tiers stay a deliberate grind. Payback @start (meta=1):
+// ~100 s / 167 s / 306 s / 600 s / 21 min / 42 min / 108 min per single unit.
 const LADDER = [
-    { cost: 15, prod: 0.1 },
-    { cost: 100, prod: 1 },
-    { cost: 1_100, prod: 8 },
-    { cost: 12_000, prod: 47 },
-    { cost: 130_000, prod: 260 },
-    { cost: 1_400_000, prod: 1_400 },
-    { cost: 20_000_000, prod: 7_800 },
+    { cost: 15, prod: 0.15 },
+    { cost: 100, prod: 0.6 },
+    { cost: 1_100, prod: 3.6 },
+    { cost: 12_000, prod: 20 },
+    { cost: 130_000, prod: 105 },
+    { cost: 1_400_000, prod: 560 },
+    { cost: 20_000_000, prod: 3_100 },
 ];
 /**
- * Balancing knob: global production scale. Costs stay put, output is cut, so
- * every asset's payback time lengthens — a clean, uniform income reduction.
+ * Balancing knob: global production scale (single dial for the whole economy).
+ * 1.0 = neutral (the LADDER values above are the effective €/s). Lower it to
+ * slow everything down uniformly, raise it to speed everything up.
  */
-const PROD_SCALE = 0.10;
+const PROD_SCALE = 1.0;
 function buildAssets(worldId, scale, defs) {
     return defs.map((d, i) => ({
         id: `${worldId}-${i}`,

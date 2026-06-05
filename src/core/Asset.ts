@@ -38,9 +38,10 @@ export class Asset {
     this.type = config.type ?? 'asset';
     this.baseCost = config.baseCost;
     this.baseProduction = config.baseProduction;
-    // Steeper default growth (1.22 vs the classic 1.15) flattens the income
-    // curve: each additional unit costs noticeably more, so counts climb slower.
-    this.costMultiplier = config.costMultiplier ?? 1.22;
+    // Classic idle-game growth (1.15): cheap to stack the early tiers for a
+    // snappy start, but the 50th unit still costs ~289× the first — so big
+    // counts remain a real, escalating goal. Overridable per asset in config.
+    this.costMultiplier = config.costMultiplier ?? 1.15;
     this.world = world;
   }
 

@@ -49,8 +49,8 @@ const prakt = game.getAsset('local-0');
 ok(prakt.getCost(1) === 15, `praktikant base cost 15 (got ${prakt.getCost(1)})`);
 ok(game.buyAsset('local-0', 1), 'buy 1 praktikant');
 ok(prakt.count === 1, 'count is 1');
-// Balance: baseProduction 0.1 × PROD_SCALE 0.10 = 0.01 €/s per Praktikant.
-ok(Math.abs(game.getPerSecond() - 0.01) < 1e-9, `€/s is 0.01 (got ${game.getPerSecond()})`);
+// Balance (rebalanced): prod 0.15 × PROD_SCALE 1.0 = 0.15 €/s per Praktikant.
+ok(Math.abs(game.getPerSecond() - 0.15) < 1e-9, `€/s is 0.15 (got ${game.getPerSecond()})`);
 ok(Math.abs(game.company.money.amount - 985) < 1e-9, 'money 1000-15=985');
 ok(prakt.getCost(10) > 150, 'buying 10 costs more than 10× base (growth)');
 

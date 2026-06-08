@@ -129,6 +129,12 @@ export function peekMoney(userId) {
   try { return JSON.parse(row.data)?.company?.money?.amount ?? 0; } catch { return 0; }
 }
 
+/** Read-only legal stats (no accrue, no persist) — used to size the laundromat. */
+export function peekStats(userId) {
+  const { game } = load(userId);
+  return { money: game.company.money.amount, perSecond: game.getPerSecond(), valuation: game.getValuation() };
+}
+
 /** Settled money balance. */
 export function getMoney(userId, now = Date.now()) {
   const { game, lastTick } = load(userId);

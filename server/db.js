@@ -73,6 +73,25 @@ db.exec(`
     PRIMARY KEY (user_id, item_id)
   );
 
+  /* Underworld (shadow economy): dirty money, heat, and the laundering queue.
+     Heat decay + wash conversion are lazy (timestamp-based). */
+  CREATE TABLE IF NOT EXISTS player_underworld (
+    user_id      INTEGER PRIMARY KEY REFERENCES users(id),
+    dirty_money  REAL NOT NULL DEFAULT 0,
+    heat         REAL NOT NULL DEFAULT 0,
+    heat_updated INTEGER NOT NULL DEFAULT 0,
+    wash_queue   REAL NOT NULL DEFAULT 0,
+    wash_updated INTEGER NOT NULL DEFAULT 0
+  );
+
+  /* Underworld contraband inventory (count stacks; tradable). */
+  CREATE TABLE IF NOT EXISTS player_uw_items (
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    item_id TEXT NOT NULL,
+    count   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, item_id)
+  );
+
   CREATE TABLE IF NOT EXISTS resource_state (
     user_id   INTEGER PRIMARY KEY REFERENCES users(id),
     last_tick INTEGER NOT NULL
@@ -214,6 +233,18 @@ const stmts = {
     `INSERT INTO player_items (user_id, item_id, count) VALUES (?, ?, ?)
      ON CONFLICT(user_id, item_id) DO UPDATE SET count = excluded.count`
   ),
+  uwGet: db.prepare('SELECT dirty_money, heat, heat_updated, wash_queue, wash_updated FROM player_underworld WHERE user_id = ?'),
+  uwSet: db.prepare(
+    `INSERT INTO player_underworld (user_id, dirty_money, heat, heat_updated, wash_queue, wash_updated)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET dirty_money = excluded.dirty_money, heat = excluded.heat,
+       heat_updated = excluded.heat_updated, wash_queue = excluded.wash_queue, wash_updated = excluded.wash_updated`
+  ),
+  uwItemAll: db.prepare('SELECT item_id, count FROM player_uw_items WHERE user_id = ?'),
+  uwItemUpsert: db.prepare(
+    `INSERT INTO player_uw_items (user_id, item_id, count) VALUES (?, ?, ?)
+     ON CONFLICT(user_id, item_id) DO UPDATE SET count = excluded.count`
+  ),
   // Dev reset: wipe one player's authoritative state (economy + all inventories).
   delEconomy: db.prepare('DELETE FROM player_economy WHERE user_id = ?'),
   delItems: db.prepare('DELETE FROM player_items WHERE user_id = ?'),
@@ -221,6 +252,8 @@ const stmts = {
   delBuildings: db.prepare('DELETE FROM player_buildings WHERE user_id = ?'),
   delEnergy: db.prepare('DELETE FROM player_energy WHERE user_id = ?'),
   delResState: db.prepare('DELETE FROM resource_state WHERE user_id = ?'),
+  delUnderworld: db.prepare('DELETE FROM player_underworld WHERE user_id = ?'),
+  delUwItems: db.prepare('DELETE FROM player_uw_items WHERE user_id = ?'),
   energyGet: db.prepare('SELECT energy, last_tick FROM player_energy WHERE user_id = ? AND world = ?'),
   energySet: db.prepare(
     `INSERT INTO player_energy (user_id, world, energy, last_tick) VALUES (?, ?, ?, ?)
@@ -307,10 +340,15 @@ export const queries = {
   setBuilding: (userId, buildingId, count) => stmts.bldUpsert.run(userId, buildingId, count),
   getItems: (userId) => stmts.itemAll.all(userId),               // [{ item_id, count }]
   setItem: (userId, itemId, count) => stmts.itemUpsert.run(userId, itemId, count),
+  getUnderworld: (userId) => stmts.uwGet.get(userId),
+  setUnderworld: (userId, s) => stmts.uwSet.run(userId, s.dirty_money, s.heat, s.heat_updated, s.wash_queue, s.wash_updated),
+  getUwItems: (userId) => stmts.uwItemAll.all(userId),          // [{ item_id, count }]
+  setUwItem: (userId, itemId, count) => stmts.uwItemUpsert.run(userId, itemId, count),
   /** Dev reset: delete a player's economy + all inventories (defaults regenerate lazily). */
   resetPlayer: (userId) => {
     stmts.delEconomy.run(userId); stmts.delItems.run(userId); stmts.delResources.run(userId);
     stmts.delBuildings.run(userId); stmts.delEnergy.run(userId); stmts.delResState.run(userId);
+    stmts.delUnderworld.run(userId); stmts.delUwItems.run(userId);
   },
   getEnergy: (userId, world) => stmts.energyGet.get(userId, world),
   setEnergy: (userId, world, energy, lastTick) => stmts.energySet.run(userId, world, energy, lastTick),

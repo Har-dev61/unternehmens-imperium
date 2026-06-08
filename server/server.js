@@ -28,6 +28,7 @@ import * as trade from './trade.js';
 import * as realtime from './realtime.js';
 import * as economy from './economy.js';
 import * as lootbox from './lootbox.js';
+import * as underworld from './underworld.js';
 
 const PORT = process.env.PORT ?? 3000;
 // In production bind to 127.0.0.1 so the backend is only reachable through the
@@ -443,6 +444,26 @@ app.post('/api/dev/grant-item', requireAuth, requireDev, (req, res) => {
 });
 app.post('/api/dev/reset', requireAuth, requireDev, (req, res) => {
   res.json(tx(() => { queries.resetPlayer(req.user.id); return { ok: true, ...economy.snapshot(req.user.id) }; }));
+});
+
+// --- Underworld: shadow economy (server-authoritative) ---------------------
+app.get('/api/underworld/config', (_req, res) => res.json(underworld.config()));
+app.get('/api/underworld', requireAuth, (req, res) => res.json(tx(() => underworld.snapshot(req.user.id))));
+app.post('/api/underworld/activity', requireAuth, (req, res) => {
+  if (!underworld.actionAllowed(req.user.id)) return res.status(429).json({ error: 'Zu schnell – kurz abkühlen.' });
+  const r = tx(() => underworld.doJob(req.user.id, String(req.body?.jobId ?? '')));
+  if (r.error) return res.status(400).json(r);
+  res.json(r);
+});
+app.post('/api/underworld/sell', requireAuth, (req, res) => {
+  const r = tx(() => underworld.sellContraband(req.user.id, String(req.body?.itemId ?? ''), Number(req.body?.qty) || 1));
+  if (r.error) return res.status(400).json(r);
+  res.json(r);
+});
+app.post('/api/underworld/launder', requireAuth, (req, res) => {
+  const r = tx(() => underworld.launder(req.user.id, Number(req.body?.amount)));
+  if (r.error) return res.status(400).json(r);
+  res.json(r);
 });
 
 // --- Trading lobbies (Phase 3) ---------------------------------------------

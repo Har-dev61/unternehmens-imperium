@@ -236,6 +236,31 @@ export class OnlineManager {
         this.requireServer();
         return this.api('/api/dev/reset', { method: 'POST', body: {}, auth: true });
     }
+    // === Underworld (shadow economy, server-authoritative) ==================
+    async fetchUnderworldConfig() {
+        if (!this.serverUrl)
+            throw new Error('Kein Server konfiguriert.');
+        return this.api('/api/underworld/config');
+    }
+    async fetchUnderworld() {
+        this.requireServer();
+        return this.api('/api/underworld', { auth: true });
+    }
+    /** Pull a job: dirty cash + maybe contraband + heat + crypto-secure catch roll. */
+    async uwActivity(jobId) {
+        this.requireServer();
+        return this.api('/api/underworld/activity', { method: 'POST', body: { jobId }, auth: true });
+    }
+    /** Sell contraband to the fence for dirty money. */
+    async uwSell(itemId, qty = 1) {
+        this.requireServer();
+        return this.api('/api/underworld/sell', { method: 'POST', body: { itemId, qty }, auth: true });
+    }
+    /** Queue dirty money into the laundromat (converts to legal over time, minus fee). */
+    async uwLaunder(amount) {
+        this.requireServer();
+        return this.api('/api/underworld/launder', { method: 'POST', body: { amount }, auth: true });
+    }
     // === Trading lobbies (Phase 3) ==========================================
     requireServer() { if (!this.usingServer)
         throw new Error('Dafür musst du online angemeldet sein.'); }

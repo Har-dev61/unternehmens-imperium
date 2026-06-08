@@ -588,6 +588,57 @@ h3 { font-size: 0.95rem; margin: 0.9rem 0 0.5rem; color: var(--muted); text-tran
 .dev-row #dev-item-n { width: 4.5rem; }
 .dev-row button { white-space: nowrap; }
 
+/* ===== Underworld (shadow economy, full-mode switch) ===== */
+/* Realm switch animation overlay (covers everything during the transition). */
+#uw-switch { position: fixed; inset: 0; z-index: 130; display: flex; align-items: center; justify-content: center;
+  background: #05060a; opacity: 0; pointer-events: none; transition: opacity 0.6s ease; }
+#uw-switch.on { opacity: 1; pointer-events: all; }
+#uw-switch[hidden] { display: none; }
+.uw-switch-text { color: #e5e7eb; font-size: 1.4rem; font-weight: 800; letter-spacing: 0.04em; text-shadow: 0 0 18px rgba(239,68,68,0.6); }
+
+/* When in the underworld, the legal UI is hidden and the dark view takes over. */
+body[data-realm="underworld"] #topbar, body[data-realm="underworld"] #app { display: none; }
+#underworld-view { position: fixed; inset: 0; z-index: 30; overflow-y: auto;
+  background: radial-gradient(1200px 700px at 50% -10%, #2a0d12, #0a0608 60%); color: #e5e7eb; }
+#underworld-view[hidden] { display: none; }
+.uw-wrap { max-width: 1100px; margin: 0 auto; padding: 1rem 1rem 3rem; display: flex; flex-direction: column; gap: 1rem; }
+.uw-head { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; border-bottom: 1px solid #3a1a20; padding-bottom: 0.8rem; }
+.uw-brand { font-size: 1.5rem; font-weight: 900; color: #ef4444; letter-spacing: 0.03em; }
+.uw-pots { display: flex; gap: 1rem; flex: 1; flex-wrap: wrap; font-size: 0.9rem; }
+.uw-dirty b { color: #f59e0b; } .uw-legal b { color: #4ade80; }
+.uw-head .btn-ghost { border-color: #5a2530; background: #1a0d10; color: #e5e7eb; }
+.uw-heat { background: #150a0d; border: 1px solid #3a1a20; border-radius: 12px; padding: 0.7rem 0.9rem; }
+.uw-heat-label { font-size: 0.85rem; margin-bottom: 0.5rem; }
+.uw-heat-bar { position: relative; height: 12px; border-radius: 999px; background: #2a1318; overflow: hidden; }
+.uw-heat-fill { height: 100%; transition: width 0.4s ease, background 0.4s ease; }
+.uw-heat-safe { position: absolute; top: -2px; bottom: -2px; width: 2px; background: #4ade80; opacity: 0.7; }
+.uw-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0.9rem; align-items: start; }
+.uw-panel { background: #140b0e; border: 1px solid #3a1a20; border-radius: 14px; padding: 0.9rem; }
+.uw-panel h3 { margin: 0 0 0.7rem; color: #e5e7eb; text-transform: none; letter-spacing: 0; font-size: 1rem; }
+.uw-jobs { display: flex; flex-direction: column; gap: 0.5rem; }
+.uw-job { display: flex; align-items: center; gap: 0.6rem; text-align: left; background: #1c1013; border: 1px solid #3a1a20;
+  border-radius: 10px; padding: 0.6rem 0.7rem; color: #e5e7eb; cursor: pointer; }
+.uw-job:hover:not(:disabled) { border-color: #ef4444; background: #241317; }
+.uw-job:disabled { opacity: 0.5; cursor: default; }
+.uw-job-ico { font-size: 1.6rem; }
+.uw-job-main { display: flex; flex-direction: column; }
+.uw-job-name { font-weight: 700; }
+.uw-job-meta { font-size: 0.76rem; color: #9ca3af; }
+.uw-result { margin-top: 0.6rem; min-height: 1.2rem; font-weight: 700; }
+.uw-result.pop { animation: lbpop 0.3s ease; }
+.uw-gain { color: #f59e0b; } .uw-busted { color: #ef4444; }
+.uw-fence { display: flex; flex-direction: column; gap: 0.4rem; }
+.uw-ware { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 0.5rem;
+  background: #1c1013; border: 1px solid #3a1a20; border-radius: 10px; padding: 0.45rem 0.6rem; }
+.uw-ware-ico { font-size: 1.3rem; } .uw-ware-name { font-size: 0.8rem; font-weight: 700; } .uw-ware-n { font-size: 0.8rem; }
+.uw-ware .btn-ghost { border-color: #5a2530; background: #241317; color: #e5e7eb; }
+.uw-wash { font-size: 0.9rem; margin-bottom: 0.5rem; } .uw-wash b { color: #f59e0b; }
+.uw-wash-row { display: flex; gap: 0.5rem; }
+.uw-wash-row input { flex: 1; background: #1c1013; border: 1px solid #3a1a20; border-radius: 8px; color: #e5e7eb; padding: 0.4rem 0.5rem; font-size: 16px; }
+.uw-wash-row .btn-prestige { width: auto; }
+/* Trade: underworld realm divider in the offer editor */
+.offer-realm { margin: 0.5rem 0 0.2rem; font-size: 0.8rem; font-weight: 700; color: var(--bad); border-top: 1px dashed var(--border); padding-top: 0.45rem; }
+
 /* ===== Toasts ===== */
 .toast-container { position: fixed; bottom: 1rem; right: 1rem; z-index: 110; display: flex; flex-direction: column; gap: 0.5rem; max-width: 320px; }
 .toast { display: flex; gap: 0.6rem; align-items: center; background: var(--panel); border: 1px solid var(--border);

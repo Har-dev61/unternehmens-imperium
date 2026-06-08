@@ -266,6 +266,31 @@ export class OnlineManager {
     return this.api('/api/dev/reset', { method: 'POST', body: {}, auth: true });
   }
 
+  // === Underworld (shadow economy, server-authoritative) ==================
+  async fetchUnderworldConfig(): Promise<any> {
+    if (!this.serverUrl) throw new Error('Kein Server konfiguriert.');
+    return this.api('/api/underworld/config');
+  }
+  async fetchUnderworld(): Promise<any> {
+    this.requireServer();
+    return this.api('/api/underworld', { auth: true });
+  }
+  /** Pull a job: dirty cash + maybe contraband + heat + crypto-secure catch roll. */
+  async uwActivity(jobId: string): Promise<any> {
+    this.requireServer();
+    return this.api('/api/underworld/activity', { method: 'POST', body: { jobId }, auth: true });
+  }
+  /** Sell contraband to the fence for dirty money. */
+  async uwSell(itemId: string, qty = 1): Promise<any> {
+    this.requireServer();
+    return this.api('/api/underworld/sell', { method: 'POST', body: { itemId, qty }, auth: true });
+  }
+  /** Queue dirty money into the laundromat (converts to legal over time, minus fee). */
+  async uwLaunder(amount: number): Promise<any> {
+    this.requireServer();
+    return this.api('/api/underworld/launder', { method: 'POST', body: { amount }, auth: true });
+  }
+
   // === Trading lobbies (Phase 3) ==========================================
   private requireServer(): void { if (!this.usingServer) throw new Error('Dafür musst du online angemeldet sein.'); }
 
@@ -285,7 +310,7 @@ export class OnlineManager {
     this.requireServer();
     return this.api('/api/lobbies/' + encodeURIComponent(id) + '/join', { method: 'POST', body: {}, auth: true });
   }
-  async setLobbyOffer(id: string, offer: Record<string, number> | { resources: Record<string, number>; money: number; items?: Record<string, number> }): Promise<any> {
+  async setLobbyOffer(id: string, offer: Record<string, number> | { resources: Record<string, number>; money: number; items?: Record<string, number>; dirtyMoney?: number; uwItems?: Record<string, number> }): Promise<any> {
     this.requireServer();
     return this.api('/api/lobbies/' + encodeURIComponent(id) + '/offer', { method: 'POST', body: { offer }, auth: true });
   }

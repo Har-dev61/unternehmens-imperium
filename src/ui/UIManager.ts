@@ -93,6 +93,13 @@ export class UIManager {
   private lootboxWorld = '';     // selected world for the Welten-Box
   private lootboxBusy = false;   // true while a box is opening / the reel spins
 
+  // Underworld (shadow economy): cached config + last snapshot + UI state.
+  private underworldConfig: any = null;
+  private underworldState: any = null;
+  private uwActive = false;      // true while the underworld full-mode view is showing
+  private uwBusy = false;        // true while an underworld action is in flight
+  private uwSyncAccum = 0;
+
   // Client-local UI preferences. Under server authority the game state comes
   // from the server, but these cosmetic choices stay on the device (otherwise a
   // reconcile would reset them every few seconds).
@@ -206,6 +213,7 @@ export class UIManager {
     });
     this.$('btn-mute').addEventListener('click', () => this.toggleMute());
     this.$('btn-news').addEventListener('click', () => this.openNews());
+    this.$('btn-underworld').addEventListener('click', () => this.enterUnderworld());
     this.$('daily-bonus').addEventListener('click', () => this.handleDaily());
 
     this.$('modal-layer').addEventListener('click', (e) => {
@@ -343,6 +351,11 @@ export class UIManager {
         this.econReconcileAccum += 0.4;
         if (this.pendingClicks > 0 && this.clickFlushAccum >= 1.5) { this.clickFlushAccum = 0; void this.flushClicks(); }
         if (this.econReconcileAccum >= 8) { this.econReconcileAccum = 0; void this.reconcileEconomy(); }
+      }
+      // Underworld: re-sync heat decay + laundering while the mode is open.
+      if (this.uwActive) {
+        this.uwSyncAccum += 0.4;
+        if (this.uwSyncAccum >= 3) { this.uwSyncAccum = 0; void this.syncUnderworld(); }
       }
     }
   }
@@ -1421,8 +1434,12 @@ export class UIManager {
       .map(([t, a]) => `${this.resIcon(t)} ${formatNumber(a as number)}`);
     const items = o && typeof o === 'object' && 'items' in o ? (o.items ?? {}) : {};
     for (const [id, n] of Object.entries(items)) if ((n as number) > 0) parts.push(`${this.itemIcon(id)} ${formatNumber(n as number)}`);
+    const uwItems = o && typeof o === 'object' && 'uwItems' in o ? (o.uwItems ?? {}) : {};
+    for (const [id, n] of Object.entries(uwItems)) if ((n as number) > 0) parts.push(`${this.uwItemMeta(id).icon} ${formatNumber(n as number)}`);
     const money = o && typeof o === 'object' && 'money' in o ? Number(o.money) : 0;
     if (money > 0) parts.push(`💶 ${formatMoney(money)}`);
+    const dirty = o && typeof o === 'object' && 'dirtyMoney' in o ? Number(o.dirtyMoney) : 0;
+    if (dirty > 0) parts.push(`🩸 ${formatMoney(dirty)}`);
     return parts.length ? parts.join(' · ') : '—';
   }
 
@@ -1447,6 +1464,7 @@ export class UIManager {
         for (const w of this.resourceConfig!.worlds) for (const r of w.resources) { this.resIconMap[r.type] = r.icon; this.resNameMap[r.type] = r.name; }
       }
       if (!this.lootboxConfig) { try { this.lootboxConfig = await om.fetchLootboxConfig(); } catch { /* item chips fall back to 🎁 */ } }
+      if (!this.underworldConfig) { try { this.underworldConfig = await om.fetchUnderworldConfig(); } catch { /* contraband chips fall back */ } }
       if (this.tradeLobbyId) {
         this.tradeState = await om.getLobby(this.tradeLobbyId);
         if (this.tradeState?.error) { this.tradeLobbyId = null; this.tradeState = null; }
@@ -1530,7 +1548,28 @@ export class UIManager {
         <span class="oe-name">Geld</span>
         <input type="number" min="0" step="1" max="${maxMoney}" data-offer-money value="${Math.floor(myOffer.money ?? 0)}">
       </div>`;
-    const offerBody = ((resourceRows + itemRows) || '<p class="empty">Nichts zum Anbieten.</p>') + moneyRow;
+    // Underworld goods (single-realm: server rejects mixing legal + dirty in one lobby).
+    const offUw: Record<string, number> = myOffer.uwItems ?? {};
+    const uwRows = Object.entries(you.uwItems ?? {})
+      .filter(([id, a]) => (a as number) > 0 || (offUw[id] ?? 0) > 0)
+      .map(([id, a]) => {
+        const max = Math.floor((a as number) + (offUw[id] ?? 0));
+        return `<div class="offer-edit-row">
+          <span class="res-ico">${this.uwItemMeta(id).icon}</span>
+          <span class="oe-name">${escapeHtml(this.uwItemMeta(id).name)}</span>
+          <input type="number" min="0" step="1" max="${max}" data-offer-uw="${escapeAttr(id)}" value="${Math.floor(offUw[id] ?? 0)}">
+        </div>`;
+      }).join('');
+    const maxDirty = Math.floor((you.dirtyMoney ?? 0) + (myOffer.dirtyMoney ?? 0));
+    const dirtyRow = `<div class="offer-edit-row">
+        <span class="res-ico">🩸</span>
+        <span class="oe-name">Schmutziges Geld</span>
+        <input type="number" min="0" step="1" max="${maxDirty}" data-offer-dirty value="${Math.floor(myOffer.dirtyMoney ?? 0)}">
+      </div>`;
+    const uwBlock = (uwRows || maxDirty > 0)
+      ? `<div class="offer-realm">🕶️ Unterwelt <span class="hint">(nicht mit Legalem mischen)</span></div>${uwRows}${dirtyRow}`
+      : '';
+    const offerBody = ((resourceRows + itemRows) || '<p class="empty">Nichts Legales zum Anbieten.</p>') + moneyRow + uwBlock;
     const pill = (c: boolean) => c ? ' <span class="verify-pill ok">bestätigt</span>' : '';
     container.innerHTML = `
       <div class="trade-room">
@@ -1580,10 +1619,16 @@ export class UIManager {
     this.$('trade-content').querySelectorAll<HTMLInputElement>('[data-offer-item]').forEach((i) => {
       const v = Math.floor(Number(i.value)); if (v > 0) items[i.dataset.offerItem!] = v;
     });
+    const uwItems: Record<string, number> = {};
+    this.$('trade-content').querySelectorAll<HTMLInputElement>('[data-offer-uw]').forEach((i) => {
+      const v = Math.floor(Number(i.value)); if (v > 0) uwItems[i.dataset.offerUw!] = v;
+    });
     const moneyEl = this.$('trade-content').querySelector<HTMLInputElement>('[data-offer-money]');
     const money = moneyEl ? Math.max(0, Math.floor(Number(moneyEl.value)) || 0) : 0;
+    const dirtyEl = this.$('trade-content').querySelector<HTMLInputElement>('[data-offer-dirty]');
+    const dirtyMoney = dirtyEl ? Math.max(0, Math.floor(Number(dirtyEl.value)) || 0) : 0;
     try {
-      this.tradeState = await this.game.onlineManager.setLobbyOffer(this.tradeLobbyId, { resources, money, items });
+      this.tradeState = await this.game.onlineManager.setLobbyOffer(this.tradeLobbyId, { resources, money, items, dirtyMoney, uwItems });
       this.renderLobbyRoom();
       this.playSound(540, 0.05);
       void this.reconcileEconomy(); // money moved into/out of escrow → refresh the mirror
@@ -1812,6 +1857,195 @@ export class UIManager {
       track.addEventListener('transitionend', reveal, { once: true });
       setTimeout(reveal, 6000); // safety net if transitionend is missed (e.g. throttled tab)
     });
+  }
+
+  // === Underworld (shadow economy, full-mode switch) ======================
+  private uwItemMeta(id: string): any {
+    return (this.underworldConfig?.contraband ?? []).find((c: any) => c.id === id) ?? { name: id, icon: '📦', color: '#9ca3af', value: 0 };
+  }
+
+  /** Play the realm-switch animation, swapping content at the black midpoint. */
+  private playRealmSwitch(toUnderworld: boolean, mid: () => void): void {
+    let ov = document.getElementById('uw-switch');
+    if (!ov) { ov = document.createElement('div'); ov.id = 'uw-switch'; document.body.appendChild(ov); }
+    ov.hidden = false;
+    ov.innerHTML = `<div class="uw-switch-text">${toUnderworld ? '🕶️ Du betrittst die Unterwelt …' : '🏢 Zurück ins Geschäft …'}</div>`;
+    requestAnimationFrame(() => ov!.classList.add('on'));
+    setTimeout(() => mid(), 700);                 // swap while fully black
+    setTimeout(() => ov!.classList.remove('on'), 1100);
+    setTimeout(() => { ov!.hidden = true; }, 1700);
+  }
+
+  enterUnderworld(): void {
+    if (this.uwActive) return;
+    if (!this.game.onlineManager.usingServer) { this.notify.show({ title: 'Nur online', text: 'Melde dich an, um die Unterwelt zu betreten.', icon: '🔒', kind: 'info' }); return; }
+    this.playSound(160, 0.25);
+    this.playRealmSwitch(true, () => {
+      this.uwActive = true;
+      this.uwSyncAccum = 0;
+      document.body.dataset.realm = 'underworld';
+      let view = document.getElementById('underworld-view');
+      if (!view) { view = document.createElement('div'); view.id = 'underworld-view'; document.body.appendChild(view); }
+      view.hidden = false;
+      view.innerHTML = '<p class="empty" style="padding:2rem">Lade Unterwelt …</p>';
+      void this.buildUnderworld();
+    });
+  }
+
+  exitUnderworld(): void {
+    if (!this.uwActive) return;
+    this.playSound(220, 0.2);
+    this.playRealmSwitch(false, () => {
+      this.uwActive = false;
+      delete document.body.dataset.realm;
+      const view = document.getElementById('underworld-view');
+      if (view) view.hidden = true;
+      void this.reconcileEconomy(); // pick up any laundered money in the legal mirror
+    });
+  }
+
+  async buildUnderworld(): Promise<void> {
+    const om = this.game.onlineManager;
+    try {
+      if (!this.underworldConfig) this.underworldConfig = await om.fetchUnderworldConfig();
+      this.underworldState = await om.fetchUnderworld();
+      this.renderUnderworld();
+    } catch (e) {
+      const view = document.getElementById('underworld-view');
+      if (view) view.innerHTML = `<p class="empty" style="padding:2rem">Unterwelt nicht erreichbar: ${escapeHtml((e as Error).message)}</p>`;
+    }
+  }
+
+  private renderUnderworld(): void {
+    const cfg = this.underworldConfig, st = this.underworldState;
+    const view = document.getElementById('underworld-view');
+    if (!cfg || !st || !view) return;
+    const heatPct = Math.min(100, (st.heat / st.maxHeat) * 100);
+    const heatColor = st.heat <= st.safeHeat ? '#4ade80' : st.heat < st.maxHeat * 0.7 ? '#f59e0b' : '#ef4444';
+    const catchPct = (st.catchChance * 100).toFixed(0);
+
+    const jobs = cfg.jobs.map((j: any) => `
+      <button class="uw-job" data-job="${escapeAttr(j.id)}" ${this.uwBusy ? 'disabled' : ''}>
+        <span class="uw-job-ico">${j.icon}</span>
+        <span class="uw-job-main"><span class="uw-job-name">${escapeHtml(j.name)}</span>
+          <span class="uw-job-meta">${formatMoney(j.pay[0])}–${formatMoney(j.pay[1])} · +${j.heat} Heat${j.dropChance ? ' · 📦 Ware' : ''}</span></span>
+      </button>`).join('');
+
+    const owned = cfg.contraband.filter((c: any) => (st.items[c.id] ?? 0) > 0);
+    const fence = owned.length ? owned.map((c: any) => `
+      <div class="uw-ware" style="border-color:${c.color}">
+        <span class="uw-ware-ico">${c.icon}</span>
+        <span class="uw-ware-name" style="color:${c.color}">${escapeHtml(c.name)}</span>
+        <b class="uw-ware-n">×${formatNumber(st.items[c.id])}</b>
+        <button class="btn-ghost small" data-sell="${escapeAttr(c.id)}" ${this.uwBusy ? 'disabled' : ''}>Verkaufen · ${formatMoney(c.value)}</button>
+      </div>`).join('') : '<p class="empty">Keine Schmuggelware. Mach einen „Schmuggel"-Job.</p>';
+
+    const maxWash = Math.max(0, Math.min(st.dirtyMoney, st.wash.capacity - st.wash.queue));
+    view.innerHTML = `
+      <div class="uw-wrap">
+        <header class="uw-head">
+          <div class="uw-brand">🕶️ Unterwelt</div>
+          <div class="uw-pots">
+            <span class="uw-dirty">🩸 Schmutzig: <b>${formatMoney(st.dirtyMoney)}</b></span>
+            <span class="uw-legal">🏦 Legal: <b>${formatMoney(st.legalMoney)}</b></span>
+          </div>
+          <button class="btn-ghost" data-act="uw-exit">⬅ Zurück ins Geschäft</button>
+        </header>
+
+        <section class="uw-heat">
+          <div class="uw-heat-label">🔥 Fahndungslevel — Erwischt-Risiko: <b style="color:${heatColor}">${catchPct} %</b>
+            <span class="hint">(sicher ≤ ${st.safeHeat}; kühlt mit der Zeit ab)</span></div>
+          <div class="uw-heat-bar"><div class="uw-heat-fill" style="width:${heatPct}%;background:${heatColor}"></div>
+            <div class="uw-heat-safe" style="left:${(st.safeHeat / st.maxHeat) * 100}%"></div></div>
+        </section>
+
+        <div class="uw-cols">
+          <section class="uw-panel">
+            <h3>💼 Jobs</h3>
+            <div class="uw-jobs">${jobs}</div>
+            <div class="uw-result" id="uw-result"></div>
+          </section>
+          <section class="uw-panel">
+            <h3>🤝 Hehler — Schmuggelware verkaufen</h3>
+            <div class="uw-fence">${fence}</div>
+          </section>
+          <section class="uw-panel">
+            <h3>🧼 Geldwäsche</h3>
+            <p class="hint">Über deine legale Firma. ${(st.wash.feePct * 100).toFixed(0)} % Gebühr · ${formatMoney(st.wash.rate)}/s · Kapazität ${formatMoney(st.wash.capacity)}.</p>
+            <div class="uw-wash">In Wäsche: <b>${formatMoney(st.wash.queue)}</b> / ${formatMoney(st.wash.capacity)}</div>
+            <div class="uw-wash-row">
+              <input id="uw-wash-amt" type="number" min="0" step="1" value="${Math.floor(maxWash)}" max="${Math.floor(maxWash)}">
+              <button class="btn-prestige" data-act="uw-wash" ${this.uwBusy ? 'disabled' : ''}>Waschen</button>
+            </div>
+          </section>
+        </div>
+      </div>`;
+
+    view.querySelector('[data-act="uw-exit"]')!.addEventListener('click', () => this.exitUnderworld());
+    view.querySelectorAll<HTMLElement>('[data-job]').forEach((b) => b.addEventListener('click', () => void this.handleJob(b.dataset.job!)));
+    view.querySelectorAll<HTMLElement>('[data-sell]').forEach((b) => b.addEventListener('click', () => void this.handleSell(b.dataset.sell!)));
+    view.querySelector('[data-act="uw-wash"]')!.addEventListener('click', () => {
+      const amt = Number((view.querySelector('#uw-wash-amt') as HTMLInputElement).value);
+      void this.handleLaunder(amt);
+    });
+  }
+
+  /** Quiet periodic re-sync while the underworld is open (heat decay + wash). */
+  private async syncUnderworld(): Promise<void> {
+    if (!this.uwActive || this.uwBusy) return;
+    try { this.underworldState = await this.game.onlineManager.fetchUnderworld(); this.renderUnderworld(); }
+    catch { /* transient — keep last view */ }
+  }
+
+  private showUwResult(html: string): void {
+    const el = document.getElementById('uw-result');
+    if (el) { el.innerHTML = html; el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop'); }
+  }
+
+  private async handleJob(jobId: string): Promise<void> {
+    if (this.uwBusy) return;
+    this.uwBusy = true;
+    try {
+      const r = await this.game.onlineManager.uwActivity(jobId);
+      this.underworldState = r;
+      if (r.caught) {
+        this.showUwResult(`<span class="uw-busted">🚨 ERWISCHT! −${formatMoney(r.lost)} schmutziges Geld beschlagnahmt.</span>`);
+        this.notify.show({ title: '🚨 Razzia!', text: `${formatMoney(r.lost)} schmutziges Geld weg. Heat zurückgesetzt.`, icon: '🚔', kind: 'error', duration: 6000 });
+        this.playSound(110, 0.3);
+      } else {
+        const drop = r.drop ? ` · 📦 ${escapeHtml(r.drop.name)}` : '';
+        this.showUwResult(`<span class="uw-gain">+${formatMoney(r.cash)} schmutzig${drop}</span>`);
+        this.playSound(r.drop ? 880 : 520, 0.06);
+      }
+      this.renderUnderworld();
+    } catch (e) {
+      this.notify.show({ title: 'Fehlgeschlagen', text: (e as Error).message, icon: '⚠️', kind: 'error' });
+    } finally { this.uwBusy = false; }
+  }
+
+  private async handleSell(itemId: string): Promise<void> {
+    if (this.uwBusy) return;
+    this.uwBusy = true;
+    try {
+      const r = await this.game.onlineManager.uwSell(itemId, 1);
+      this.underworldState = r;
+      if (r.caught) this.notify.show({ title: '🚨 Beim Dealen erwischt!', text: `${formatMoney(r.lost)} weg.`, icon: '🚔', kind: 'error', duration: 6000 });
+      else this.playSound(560, 0.05);
+      this.renderUnderworld();
+    } catch (e) { this.notify.show({ title: 'Verkauf fehlgeschlagen', text: (e as Error).message, icon: '⚠️', kind: 'error' }); }
+    finally { this.uwBusy = false; }
+  }
+
+  private async handleLaunder(amount: number): Promise<void> {
+    if (this.uwBusy || !(amount > 0)) return;
+    this.uwBusy = true;
+    try {
+      const r = await this.game.onlineManager.uwLaunder(amount);
+      this.underworldState = r;
+      this.notify.show({ title: 'In die Wäsche', text: `${formatMoney(r.queued)} werden gewaschen.`, icon: '🧼', kind: 'success' });
+      this.renderUnderworld();
+    } catch (e) { this.notify.show({ title: 'Wäsche fehlgeschlagen', text: (e as Error).message, icon: '⚠️', kind: 'error' }); }
+    finally { this.uwBusy = false; }
   }
 
   // === Login gate (online-mandatory) ======================================

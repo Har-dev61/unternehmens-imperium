@@ -164,7 +164,9 @@ Start automatisch an; nach Login erscheint im **Online-Tab** das Dev-Menü
 Bekannte Variablen: `PORT`, `HOST`, `API_RATE_LIMIT` (Default 600),
 `AUTH_RATE_LIMIT` (Default 20), `DEV_USERNAME`/`DEV_PASSWORD`,
 `LOOTBOX_PRICE_{STANDARD,WORLD,PREMIUM,EVENT}`, `LOOTBOX_EVENT_ACTIVE`,
-`LOOTBOX_EVENT_UNTIL`, `ECON_OFFLINE_CAP`, `ROLL_ENERGY_*`, `MAIL_*`.
+`LOOTBOX_EVENT_UNTIL`, `UW_HEAT_DECAY` (Heat-Abkühlung/s, Default 0.04),
+`UW_WASH_FEE` (Wäsche-Gebühr, Default 0.25), `UW_PENALTY` (Strafe-Anteil,
+Default 0.5), `ECON_OFFLINE_CAP`, `ROLL_ENERGY_*`, `MAIL_*`.
 
 ---
 
